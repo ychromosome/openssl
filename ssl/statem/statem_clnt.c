@@ -1751,7 +1751,7 @@ static int set_client_ciphersuite(SSL_CONNECTION *s,
     }
 
     sk = ssl_get_ciphers_by_id(s);
-    i = sk_SSL_CIPHER_find(sk, c);
+    i = ssl_cipher_stack_find(sk, c);
     if (i < 0) {
         /* we did not say we would use this cipher */
         SSLfatal(s, SSL_AD_ILLEGAL_PARAMETER, SSL_R_WRONG_CIPHER_RETURNED);
@@ -1774,7 +1774,7 @@ static int set_client_ciphersuite(SSL_CONNECTION *s,
         s->session->cipher_id = s->session->cipher->id;
     if (s->hit && (s->session->cipher_id != c->id)) {
         if (SSL_CONNECTION_IS_VERSION13(s)) {
-            const EVP_MD *md = ssl_md(sctx, c->algorithm2);
+            const EVP_MD *md = ssl_cipher_get_evp_md(sctx, c);
 
             if (!ossl_assert(s->session->cipher != NULL)) {
                 SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_INTERNAL_ERROR);
@@ -1785,7 +1785,7 @@ static int set_client_ciphersuite(SSL_CONNECTION *s,
              * ciphersuite as long as the hash is the same.
              */
             if (md == NULL
-                || md != ssl_md(sctx, s->session->cipher->algorithm2)) {
+                || md != ssl_cipher_get_evp_md(sctx, s->session->cipher)) {
                 SSLfatal(s, SSL_AD_ILLEGAL_PARAMETER,
                     SSL_R_CIPHERSUITE_DIGEST_HAS_CHANGED);
                 return 0;

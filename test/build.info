@@ -203,7 +203,7 @@ IF[{- !$disabled{tests} -}]
   INCLUDE[tls13ccstest]=../include ../apps/include
   DEPEND[tls13ccstest]=../libcrypto ../libssl libtestutil.a
 
-  SOURCE[provider_tls_ciphersuite_test]=provider_tls_ciphersuite_test.c tls-provider.c
+  SOURCE[provider_tls_ciphersuite_test]=provider_tls_ciphersuite_test.c tls-provider.c helpers/ssltestlib.c
   INCLUDE[provider_tls_ciphersuite_test]=../include ../apps/include ..
   DEPEND[provider_tls_ciphersuite_test]=../libcrypto.a ../libssl.a libtestutil.a
 

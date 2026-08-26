@@ -655,7 +655,7 @@ int tls13_change_cipher_state(SSL_CONNECTION *s, int which)
                 goto err;
             }
 
-            md = ssl_md(sctx, sslcipher->algorithm2);
+            md = ssl_cipher_get_evp_md(sctx, sslcipher);
             if (md == NULL || !EVP_DigestInit_ex(mdctx, md, NULL)) {
                 SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_INTERNAL_ERROR);
                 EVP_MD_CTX_free(mdctx);
@@ -1050,7 +1050,7 @@ int tls13_export_keying_material_early(SSL_CONNECTION *s,
     else
         sslcipher = SSL_SESSION_get0_cipher(s->session);
 
-    md = ssl_md(SSL_CONNECTION_GET_CTX(s), sslcipher->algorithm2);
+    md = ssl_cipher_get_evp_md(SSL_CONNECTION_GET_CTX(s), sslcipher);
 
     /*
      * Calculate the hash value and store it in |data|. The reason why

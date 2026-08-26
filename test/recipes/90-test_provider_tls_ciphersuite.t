@@ -8,7 +8,7 @@
 
 use strict;
 use warnings;
-use OpenSSL::Test qw/:DEFAULT/;
+use OpenSSL::Test qw/:DEFAULT srctop_file/;
 use OpenSSL::Test::Utils;
 
 setup("test_provider_tls_ciphersuite");
@@ -18,5 +18,7 @@ plan skip_all => "TLS 1.3 is not supported by this build"
 
 plan tests => 1;
 
-ok(run(test(["provider_tls_ciphersuite_test"])),
+ok(run(test(["provider_tls_ciphersuite_test",
+             srctop_file("apps", "server.pem"),
+             srctop_file("apps", "server.pem")])),
    "provider TLS ciphersuite discovery and validation");
