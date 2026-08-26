@@ -137,6 +137,10 @@ int ssl_session_set_cipher(SSL_SESSION *session, const SSL_CIPHER *cipher)
 
     ssl_cipher_free(session->cipher);
     session->cipher = cipher;
+    if (cipher != NULL && cipher->origin == SSL_CIPHER_ORIGIN_PROVIDER) {
+        session->provider_cipher_seen = 1;
+        session->not_resumable = 1;
+    }
     return 1;
 }
 
@@ -782,6 +786,9 @@ int SSL_CTX_add_session(SSL_CTX *ctx, SSL_SESSION *c)
     int ret = 0;
     SSL_SESSION *s;
 
+    if (c->provider_cipher_seen)
+        return 0;
+
     /*
      * add just 1 reference count for the SSL_CTX's session cache even though
      * it has two ways of access: each session is in a doubly linked list and
@@ -979,6 +986,8 @@ int SSL_set_session(SSL *s, SSL_SESSION *session)
     SSL_CONNECTION *sc = SSL_CONNECTION_FROM_SSL(s);
 
     if (sc == NULL)
+        return 0;
+    if (session != NULL && session->provider_cipher_seen)
         return 0;
 
     if (session != NULL && !SSL_SESSION_up_ref(session))
@@ -1208,7 +1217,7 @@ int SSL_SESSION_is_resumable(const SSL_SESSION *s)
      * In the case of EAP-FAST, we can have a pre-shared "ticket" without a
      * session ID.
      */
-    return !s->not_resumable
+    return !s->provider_cipher_seen && !s->not_resumable
         && (s->session_id_length > 0 || s->ext.ticklen > 0);
 }
 

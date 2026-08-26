@@ -3265,7 +3265,8 @@ int SSL_new_session_ticket(SSL *s)
     /* If we are in init because we're sending tickets, okay to send more. */
     if ((SSL_in_init(s) && sc->ext.extra_tickets_expected == 0)
         || SSL_IS_FIRST_HANDSHAKE(sc) || !sc->server
-        || !SSL_CONNECTION_IS_VERSION13(sc))
+        || !SSL_CONNECTION_IS_VERSION13(sc)
+        || sc->session->provider_cipher_seen)
         return 0;
     sc->ext.extra_tickets_expected++;
     if (!RECORD_LAYER_write_pending(&sc->rlayer) && !SSL_in_init(s))
@@ -5113,7 +5114,8 @@ void ssl_update_cache(SSL_CONNECTION *s, int mode)
      * would be rather hard to do anyway :-). Also if the session has already
      * been marked as not_resumable we should not cache it for later reuse.
      */
-    if (s->session->session_id_length == 0 || s->session->not_resumable)
+    if (s->session->session_id_length == 0 || s->session->not_resumable
+        || s->session->provider_cipher_seen)
         return;
 
     /*

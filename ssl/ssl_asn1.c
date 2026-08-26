@@ -135,7 +135,8 @@ int i2d_SSL_SESSION(const SSL_SESSION *in, unsigned char **pp)
     long l;
     int ret;
 
-    if ((in == NULL) || ((in->cipher == NULL) && (in->cipher_id == 0)))
+    if (in == NULL || in->provider_cipher_seen
+        || (in->cipher == NULL && in->cipher_id == 0))
         return 0;
 
     memset(&as, 0, sizeof(as));

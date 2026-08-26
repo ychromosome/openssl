@@ -616,6 +616,8 @@ struct ssl_session_st {
      * mirroring not_resumable just above, for the same reason.
      */
     int psk_external;
+    /* Copied by ssl_session_dup_intern(); not encoded in ASN.1. */
+    int provider_cipher_seen;
     /* Peer raw public key, if available */
     EVP_PKEY *peer_rpk;
     /* This is the cert and type for the other end. */
