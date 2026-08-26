@@ -62,6 +62,16 @@ OpenSSL 4.1
 
    *Ryan Hooper*
 
+ * Added provider-defined TLS 1.3 ciphersuites through the
+   `TLS-CIPHERSUITE` capability. They require explicit selection. Sessions
+   that have held one cannot be resumed, cached, serialised or ticketed:
+   SSL_SESSION_is_resumable() returns 0, and SSL_CTX_add_session(),
+   SSL_set_session(), i2d_SSL_SESSION() and SSL_new_session_ticket() fail.
+   SSL_SESSION_set_cipher() may also fail when retaining a provider-defined
+   ciphersuite.
+
+   *Martin Wolf*
+
  * Fixed TLS 1.3 clients to encrypt 0-RTT early data with the first offered
    PSK identity (RFC 9846 section 4.3.10) when a 0-RTT-capable resumption
    ticket has aged out and an external PSK is offered in its place. The early
