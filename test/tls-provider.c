@@ -443,7 +443,12 @@ static int tls_prov_get_ciphersuites(OSSL_CALLBACK *cb, void *arg)
     char ccm[] = "AES-128-CCM";
     char unavailable[] = "TLS-TEST-NO-SUCH-AEAD";
     char bad_digest[] = "SHA2-512";
+    char sha384_name[] = "TLS_TEST_PROVIDER_AES_256_GCM_SHA384";
+    char aes256_gcm[] = "AES-256-GCM";
+    char sha384[] = "SHA2-384";
     unsigned int second_codepoint = 0xfea1;
+    unsigned int sha384_codepoint = 0xfea2;
+    unsigned int sha384_secbits = 256;
     unsigned int bad_codepoint;
     unsigned int bad_secbits;
     int ret;
@@ -458,6 +463,17 @@ static int tls_prov_get_ciphersuites(OSSL_CALLBACK *cb, void *arg)
 
     if (strcmp(tls_ciphersuite_mode, "valid") == 0)
         return cb(params, arg);
+    if (strcmp(tls_ciphersuite_mode, "valid-sha384") == 0) {
+        params[TLS_CIPHERSUITE_NAME_PARAM].data = sha384_name;
+        params[TLS_CIPHERSUITE_NAME_PARAM].data_size = sizeof(sha384_name);
+        params[TLS_CIPHERSUITE_CODEPOINT_PARAM].data = &sha384_codepoint;
+        params[TLS_CIPHERSUITE_AEAD_PARAM].data = aes256_gcm;
+        params[TLS_CIPHERSUITE_AEAD_PARAM].data_size = sizeof(aes256_gcm);
+        params[TLS_CIPHERSUITE_DIGEST_PARAM].data = sha384;
+        params[TLS_CIPHERSUITE_DIGEST_PARAM].data_size = sizeof(sha384);
+        params[TLS_CIPHERSUITE_SECBITS_PARAM].data = &sha384_secbits;
+        return cb(params, arg);
+    }
     if (strcmp(tls_ciphersuite_mode, "valid-unknown-param") == 0) {
         params[TLS_CIPHERSUITE_END_PARAM] =
             OSSL_PARAM_construct_utf8_string("tls-test-optional",

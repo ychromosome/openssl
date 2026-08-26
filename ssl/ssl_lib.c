@@ -3779,7 +3779,7 @@ char *SSL_get_shared_ciphers(const SSL *s, char *buf, int size)
         int n;
 
         c = sk_SSL_CIPHER_value(clntsk, i);
-        if (sk_SSL_CIPHER_find(srvrsk, c) < 0)
+        if (ssl_cipher_stack_find(srvrsk, c) < 0)
             continue;
 
         n = (int)OPENSSL_strnlen(c->name, size);
@@ -5655,11 +5655,18 @@ SSL *SSL_dup(SSL *s)
     if (sc->cipher_list != NULL) {
         if ((retsc->cipher_list = sk_SSL_CIPHER_dup(sc->cipher_list)) == NULL)
             goto err;
+        /*
+         * SSL_dup() constructs the new object from the current SSL_CTX, which
+         * may differ from the source session_ctx after an SNI switch.
+         */
+        ssl_cipher_stack_canon(retsc, retsc->cipher_list);
     }
-    if (sc->cipher_list_by_id != NULL)
+    if (sc->cipher_list_by_id != NULL) {
         if ((retsc->cipher_list_by_id = sk_SSL_CIPHER_dup(sc->cipher_list_by_id))
             == NULL)
             goto err;
+        ssl_cipher_stack_canon(retsc, retsc->cipher_list_by_id);
+    }
 
     /* Dup the client_CA list */
     if (!dup_ca_names(&retsc->ca_names, sc->ca_names)

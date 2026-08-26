@@ -1114,7 +1114,7 @@ static int tls13_check_resumption_psk(SSL_CONNECTION *s, const EVP_MD *handmd)
         || s->session->cipher == NULL)
         return 0;
 
-    mdres = ssl_md(sctx, s->session->cipher->algorithm2);
+    mdres = ssl_cipher_get_evp_md(sctx, s->session->cipher);
     if (mdres == NULL)
         return 0;
     if (s->hello_retry_request == SSL_HRR_PENDING && mdres != handmd)
@@ -1397,7 +1397,7 @@ EXT_RETURN tls_construct_ctos_psk(SSL_CONNECTION *s, WPACKET *pkt,
             SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_INTERNAL_ERROR);
             return EXT_RETURN_FAIL;
         }
-        mdres = ssl_md(sctx, s->session->cipher->algorithm2);
+        mdres = ssl_cipher_get_evp_md(sctx, s->session->cipher);
         if (mdres == NULL) {
             /*
              * Don't recognize this cipher so we can't use the session.
@@ -1455,7 +1455,7 @@ dopsksess:
         return EXT_RETURN_NOT_SENT;
 
     if (s->psksession != NULL) {
-        mdpsk = ssl_md(sctx, s->psksession->cipher->algorithm2);
+        mdpsk = ssl_cipher_get_evp_md(sctx, s->psksession->cipher);
         if (mdpsk == NULL) {
             /*
              * Don't recognize this cipher so we can't use the session.
