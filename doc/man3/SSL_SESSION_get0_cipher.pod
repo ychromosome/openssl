@@ -19,11 +19,15 @@ SSL_SESSION_get0_cipher() retrieves the cipher that was used by the
 connection when the session was created, or NULL if it cannot be determined.
 
 The value returned is a pointer to an object maintained within B<s> and
-should not be released.
+should not be released. It remains valid for the lifetime of B<s>, including
+for provider-defined ciphersuites after the connection and SSL_CTX are freed.
 
 SSL_SESSION_set_cipher() can be used to set the ciphersuite associated with the
 SSL_SESSION B<s> to B<cipher>. For example, this could be used to set up a
 session based PSK (see L<SSL_CTX_set_psk_use_session_callback(3)>).
+
+After assignment of a provider-defined ciphersuite, B<s> is permanently
+non-resumable, non-cacheable and non-serialisable and cannot issue tickets.
 
 =head1 RETURN VALUES
 
@@ -46,9 +50,12 @@ L<SSL_CTX_set_psk_use_session_callback(3)>
 The SSL_SESSION_get0_cipher() function was added in OpenSSL 1.1.0.
 The SSL_SESSION_set_cipher() function was added in OpenSSL 1.1.1.
 
+The provider-defined ciphersuite lifetime and non-resumption behaviour were
+added in OpenSSL 4.1.
+
 =head1 COPYRIGHT
 
-Copyright 2016-2017 The OpenSSL Project Authors. All Rights Reserved.
+Copyright 2016-2026 The OpenSSL Project Authors. All Rights Reserved.
 
 Licensed under the Apache License 2.0 (the "License").  You may not use
 this file except in compliance with the License.  You can obtain a copy
