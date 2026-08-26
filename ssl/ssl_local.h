@@ -2880,6 +2880,11 @@ __owur int ssl_session_set_cipher(SSL_SESSION *session,
     const SSL_CIPHER *cipher);
 __owur int ssl_cipher_up_ref(const SSL_CIPHER *cipher);
 void ssl_cipher_free(const SSL_CIPHER *cipher);
+__owur const SSL_CIPHER *ssl_cipher_canon(const SSL_CONNECTION *s,
+    const SSL_CIPHER *cipher);
+int ssl_cipher_stack_find(STACK_OF(SSL_CIPHER) *sk,
+    const SSL_CIPHER *cipher);
+void ssl_cipher_stack_canon(const SSL_CONNECTION *s, STACK_OF(SSL_CIPHER) *sk);
 __owur int ssl_cipher_id_cmp(const SSL_CIPHER *a, const SSL_CIPHER *b);
 DECLARE_OBJ_BSEARCH_GLOBAL_CMP_FN(SSL_CIPHER, SSL_CIPHER, ssl_cipher_id);
 __owur int ssl_cipher_ptr_id_cmp(const SSL_CIPHER *const *ap,
@@ -2900,6 +2905,8 @@ __owur int ssl_cipher_get_evp_cipher(SSL_CTX *ctx, const SSL_CIPHER *sslc,
     const EVP_CIPHER **enc);
 __owur int ssl_cipher_get_evp_cipher_sn(SSL_CTX *ctx, const SSL_CIPHER *sslc,
     const EVP_CIPHER **enc);
+__owur const EVP_MD *ssl_cipher_get_evp_md(SSL_CTX *ctx,
+    const SSL_CIPHER *sslc);
 __owur int ssl_cipher_get_evp_md_mac(SSL_CTX *ctx, const SSL_CIPHER *sslc,
     const EVP_MD **md,
     int *mac_pkey_type, size_t *mac_secret_size);
