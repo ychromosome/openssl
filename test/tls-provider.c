@@ -587,11 +587,9 @@ static int tls_prov_get_ciphersuites(OSSL_CALLBACK *cb, void *arg)
         return cb(params, arg);
     }
     if (strcmp(tls_ciphersuite_mode, "valid-unknown-param") == 0) {
-        params[TLS_CIPHERSUITE_END_PARAM] =
-            OSSL_PARAM_construct_utf8_string("tls-test-optional",
-                tls_ciphersuite_name, 0);
-        params[TLS_CIPHERSUITE_END_PARAM + 1] =
-            OSSL_PARAM_construct_end();
+        params[TLS_CIPHERSUITE_END_PARAM] = OSSL_PARAM_construct_utf8_string("tls-test-optional",
+            tls_ciphersuite_name, 0);
+        params[TLS_CIPHERSUITE_END_PARAM + 1] = OSSL_PARAM_construct_end();
         return cb(params, arg);
     }
     if (strcmp(tls_ciphersuite_mode, "valid-two") == 0) {
@@ -637,7 +635,8 @@ static int tls_prov_get_ciphersuites(OSSL_CALLBACK *cb, void *arg)
     } else if (strcmp(tls_ciphersuite_mode, "low-security") == 0
         || strcmp(tls_ciphersuite_mode, "excess-security") == 0) {
         bad_secbits = strcmp(tls_ciphersuite_mode, "low-security") == 0
-            ? 64 : 256;
+            ? 64
+            : 256;
         params[TLS_CIPHERSUITE_SECBITS_PARAM].data = &bad_secbits;
     } else if (strcmp(tls_ciphersuite_mode, "missing-param") == 0) {
         params[TLS_CIPHERSUITE_SECBITS_PARAM].key = "tls-test-optional";
