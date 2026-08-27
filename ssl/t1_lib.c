@@ -369,6 +369,7 @@ static int add_provider_ciphersuite(const OSSL_PARAM params[], void *data)
         || EVP_CIPHER_get_mode(cipher) == EVP_CIPH_CCM_MODE
         || EVP_CIPHER_get_block_size(cipher) != 1
         || keylen <= 0
+        || keylen > EVP_MAX_KEY_LENGTH
         || EVP_CIPHER_get_iv_length(cipher) != 12
         || secbits > (unsigned int)keylen * 8U
         || !tls_ciphersuite_has_required_tag(cipher))
