@@ -69,13 +69,13 @@ static int test_oversized_aead_fixture(void)
     int ret = 0;
 
     if (!TEST_ptr(cipher = EVP_CIPHER_fetch(libctx,
-            TLS_TEST_OVERSIZED_AEAD_NAME, "provider=tls-provider"))
+                      TLS_TEST_OVERSIZED_AEAD_NAME, "provider=tls-provider"))
         || !TEST_int_eq(EVP_CIPHER_get_key_length(cipher),
             EVP_MAX_KEY_LENGTH + 1)
         || !TEST_int_eq(EVP_CIPHER_get_block_size(cipher), 1)
         || !TEST_int_eq(EVP_CIPHER_get_iv_length(cipher), 12)
         || !TEST_true((EVP_CIPHER_get_flags(cipher)
-                           & EVP_CIPH_FLAG_AEAD_CIPHER)
+                          & EVP_CIPH_FLAG_AEAD_CIPHER)
             != 0)
         || !TEST_int_eq(EVP_CIPHER_get_mode(cipher), EVP_CIPH_GCM_MODE)
         || !TEST_ptr(ctx = EVP_CIPHER_CTX_new())

@@ -272,8 +272,7 @@ const SSL_CIPHER *ssl_provider_ciphersuite_by_id(const SSL_CTX *ctx,
         return NULL;
 
     for (i = 0; i < sk_SSL_CIPHER_num(ctx->provider_ciphersuites); i++) {
-        const SSL_CIPHER *suite =
-            sk_SSL_CIPHER_value(ctx->provider_ciphersuites, i);
+        const SSL_CIPHER *suite = sk_SSL_CIPHER_value(ctx->provider_ciphersuites, i);
 
         if (suite->id == id)
             return suite;
@@ -290,8 +289,7 @@ const SSL_CIPHER *ssl_provider_ciphersuite_by_name(const SSL_CTX *ctx,
         return NULL;
 
     for (i = 0; i < sk_SSL_CIPHER_num(ctx->provider_ciphersuites); i++) {
-        const SSL_CIPHER *suite =
-            sk_SSL_CIPHER_value(ctx->provider_ciphersuites, i);
+        const SSL_CIPHER *suite = sk_SSL_CIPHER_value(ctx->provider_ciphersuites, i);
 
         if (OPENSSL_strcasecmp(suite->stdname, name) == 0)
             return suite;
