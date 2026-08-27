@@ -600,8 +600,9 @@ A nonzero 16-bit TLS value. GREASE and duplicate values are rejected.
 
 =item "tls-ciphersuite-aead-name" (B<OSSL_CAPABILITY_TLS_CIPHERSUITE_AEAD>) <UTF8 string>
 
-An AEAD fetch name. The cipher must have a fixed positive key length, a
-12-byte IV, a one-byte block size and a 16-byte default tag. CCM is rejected.
+An AEAD fetch name. The cipher must have a fixed positive key length no greater
+than B<EVP_MAX_KEY_LENGTH>, a 12-byte IV, a one-byte block size and a 16-byte
+default tag. CCM is rejected.
 
 =item "tls-ciphersuite-digest-name" (B<OSSL_CAPABILITY_TLS_CIPHERSUITE_DIGEST>) <UTF8 string>
 

@@ -26,7 +26,7 @@ mandatory; unknown parameters are ignored.
 |-----------|------|------------|
 | `tls-ciphersuite-name` | UTF8 | Printable ASCII, 1--255 bytes, no colon, unique ignoring case |
 | `tls-ciphersuite-code-point` | unsigned integer | Nonzero 16-bit value; no GREASE or collision |
-| `tls-ciphersuite-aead-name` | UTF8 | Fetchable fixed-length AEAD; 12-byte IV, 16-byte tag, block size 1, non-CCM |
+| `tls-ciphersuite-aead-name` | UTF8 | Fetchable fixed-length AEAD; key length at most `EVP_MAX_KEY_LENGTH`, 12-byte IV, 16-byte tag, block size 1, non-CCM |
 | `tls-ciphersuite-digest-name` | UTF8 | Fetchable SHA2-256 or SHA2-384 |
 | `tls-ciphersuite-security-bits` | unsigned integer | At least 128 and no greater than the AEAD key size |
 

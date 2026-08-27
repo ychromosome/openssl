@@ -10,6 +10,7 @@
 #include <string.h>
 #include <openssl/core_names.h>
 #include <openssl/core_dispatch.h>
+#include <openssl/evp.h>
 #include <openssl/rand.h>
 #include <openssl/params.h>
 #include <openssl/err.h>
@@ -397,6 +398,116 @@ static const OSSL_PARAM xor_sig_12_params[] = {
     OSSL_PARAM_END
 };
 
+/* Test-only AEAD with a key one byte larger than EVP_MAX_KEY_LENGTH. */
+#define TLS_TEST_OVERSIZED_AEAD_NAME "TLS-TEST-AEAD-65"
+
+static void *tls_oversized_aead_newctx(ossl_unused void *provctx)
+{
+    return OPENSSL_zalloc(1);
+}
+
+static void tls_oversized_aead_freectx(void *vctx)
+{
+    OPENSSL_free(vctx);
+}
+
+static int tls_oversized_aead_init(void *vctx,
+    ossl_unused const unsigned char *key,
+    ossl_unused size_t keylen,
+    ossl_unused const unsigned char *iv,
+    ossl_unused size_t ivlen,
+    ossl_unused const OSSL_PARAM params[])
+{
+    return vctx != NULL;
+}
+
+static int tls_oversized_aead_update(ossl_unused void *vctx,
+    unsigned char *out, size_t *outl, size_t outsize,
+    const unsigned char *in, size_t inl)
+{
+    if (out == NULL || outl == NULL || outsize < inl)
+        return 0;
+    if (out != in)
+        memmove(out, in, inl);
+    *outl = inl;
+    return 1;
+}
+
+static int tls_oversized_aead_final(ossl_unused void *vctx,
+    ossl_unused unsigned char *out, size_t *outl,
+    ossl_unused size_t outsize)
+{
+    if (outl == NULL)
+        return 0;
+    *outl = 0;
+    return 1;
+}
+
+static int tls_oversized_aead_get_params(OSSL_PARAM params[])
+{
+    OSSL_PARAM *p;
+    size_t keylen = EVP_MAX_KEY_LENGTH + 1;
+
+    p = OSSL_PARAM_locate(params, OSSL_CIPHER_PARAM_KEYLEN);
+    if (p != NULL && !OSSL_PARAM_set_size_t(p, keylen))
+        return 0;
+    p = OSSL_PARAM_locate(params, OSSL_CIPHER_PARAM_BLOCK_SIZE);
+    if (p != NULL && !OSSL_PARAM_set_size_t(p, 1))
+        return 0;
+    p = OSSL_PARAM_locate(params, OSSL_CIPHER_PARAM_IVLEN);
+    if (p != NULL && !OSSL_PARAM_set_size_t(p, 12))
+        return 0;
+    p = OSSL_PARAM_locate(params, OSSL_CIPHER_PARAM_MODE);
+    if (p != NULL && !OSSL_PARAM_set_uint(p, EVP_CIPH_GCM_MODE))
+        return 0;
+    p = OSSL_PARAM_locate(params, OSSL_CIPHER_PARAM_AEAD);
+    if (p != NULL && !OSSL_PARAM_set_int(p, 1))
+        return 0;
+    return 1;
+}
+
+static int tls_oversized_aead_get_ctx_params(ossl_unused void *vctx,
+    OSSL_PARAM params[])
+{
+    OSSL_PARAM *p = OSSL_PARAM_locate(params,
+        OSSL_CIPHER_PARAM_AEAD_TAGLEN);
+
+    return p == NULL || OSSL_PARAM_set_size_t(p, EVP_GCM_TLS_TAG_LEN);
+}
+
+static const OSSL_PARAM tls_oversized_aead_gettable_ctx_params[] = {
+    OSSL_PARAM_size_t(OSSL_CIPHER_PARAM_AEAD_TAGLEN, NULL),
+    OSSL_PARAM_END
+};
+
+static const OSSL_PARAM *tls_oversized_aead_gettable_ctx(
+    ossl_unused void *vctx, ossl_unused void *provctx)
+{
+    return tls_oversized_aead_gettable_ctx_params;
+}
+
+static const OSSL_DISPATCH tls_oversized_aead_functions[] = {
+    { OSSL_FUNC_CIPHER_NEWCTX, (void (*)(void))tls_oversized_aead_newctx },
+    { OSSL_FUNC_CIPHER_FREECTX, (void (*)(void))tls_oversized_aead_freectx },
+    { OSSL_FUNC_CIPHER_ENCRYPT_INIT, (void (*)(void))tls_oversized_aead_init },
+    { OSSL_FUNC_CIPHER_DECRYPT_INIT, (void (*)(void))tls_oversized_aead_init },
+    { OSSL_FUNC_CIPHER_UPDATE, (void (*)(void))tls_oversized_aead_update },
+    { OSSL_FUNC_CIPHER_FINAL, (void (*)(void))tls_oversized_aead_final },
+    { OSSL_FUNC_CIPHER_GET_PARAMS,
+        (void (*)(void))tls_oversized_aead_get_params },
+    { OSSL_FUNC_CIPHER_GET_CTX_PARAMS,
+        (void (*)(void))tls_oversized_aead_get_ctx_params },
+    { OSSL_FUNC_CIPHER_GETTABLE_CTX_PARAMS,
+        (void (*)(void))tls_oversized_aead_gettable_ctx },
+    OSSL_DISPATCH_END
+};
+
+static const OSSL_ALGORITHM tls_prov_ciphers[] = {
+    { TLS_TEST_OVERSIZED_AEAD_NAME, "provider=tls-provider",
+        tls_oversized_aead_functions },
+    { NULL, NULL, NULL }
+};
+
 /* Test-only TLS-CIPHERSUITE capability data. */
 static char tls_ciphersuite_name[] = "TLS_TEST_PROVIDER_AES_128_GCM_SHA256";
 static char tls_ciphersuite_aead[] = "AES-128-GCM";
@@ -442,6 +553,7 @@ static int tls_prov_get_ciphersuites(OSSL_CALLBACK *cb, void *arg)
     char non_aead[] = "AES-128-ECB";
     char ccm[] = "AES-128-CCM";
     char unavailable[] = "TLS-TEST-NO-SUCH-AEAD";
+    char oversized[] = TLS_TEST_OVERSIZED_AEAD_NAME;
     char bad_digest[] = "SHA2-512";
     char sha384_name[] = "TLS_TEST_PROVIDER_AES_256_GCM_SHA384";
     char aes256_gcm[] = "AES-256-GCM";
@@ -516,6 +628,9 @@ static int tls_prov_get_ciphersuites(OSSL_CALLBACK *cb, void *arg)
     } else if (strcmp(tls_ciphersuite_mode, "unavailable-aead") == 0) {
         params[TLS_CIPHERSUITE_AEAD_PARAM].data = unavailable;
         params[TLS_CIPHERSUITE_AEAD_PARAM].data_size = sizeof(unavailable);
+    } else if (strcmp(tls_ciphersuite_mode, "oversized-key") == 0) {
+        params[TLS_CIPHERSUITE_AEAD_PARAM].data = oversized;
+        params[TLS_CIPHERSUITE_AEAD_PARAM].data_size = sizeof(oversized);
     } else if (strcmp(tls_ciphersuite_mode, "bad-digest") == 0) {
         params[TLS_CIPHERSUITE_DIGEST_PARAM].data = bad_digest;
         params[TLS_CIPHERSUITE_DIGEST_PARAM].data_size = sizeof(bad_digest);
@@ -3309,6 +3424,8 @@ static const OSSL_ALGORITHM *tls_prov_query(void *provctx, int operation_id,
         return tls_prov_decoder;
     case OSSL_OP_SIGNATURE:
         return tls_prov_signature;
+    case OSSL_OP_CIPHER:
+        return tls_prov_ciphers;
     }
     return NULL;
 }

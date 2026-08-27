@@ -43,6 +43,7 @@ static const CIPHERSUITE_TEST ciphersuite_tests[] = {
     { "non-aead", 0, 0 },
     { "ccm", 0, 0 },
     { "unavailable-aead", 0, 0 },
+    { "oversized-key", 0, 0 },
     { "bad-digest", 0, 0 },
     { "low-security", 0, 0 },
     { "excess-security", 0, 0 },
@@ -59,6 +60,36 @@ static char *cert, *privkey;
 
 #define TLS_TEST_SHA256_NAME "TLS_TEST_PROVIDER_AES_128_GCM_SHA256"
 #define TLS_TEST_SHA384_NAME "TLS_TEST_PROVIDER_AES_256_GCM_SHA384"
+#define TLS_TEST_OVERSIZED_AEAD_NAME "TLS-TEST-AEAD-65"
+
+static int test_oversized_aead_fixture(void)
+{
+    EVP_CIPHER *cipher = NULL;
+    EVP_CIPHER_CTX *ctx = NULL;
+    int ret = 0;
+
+    if (!TEST_ptr(cipher = EVP_CIPHER_fetch(libctx,
+            TLS_TEST_OVERSIZED_AEAD_NAME, "provider=tls-provider"))
+        || !TEST_int_eq(EVP_CIPHER_get_key_length(cipher),
+            EVP_MAX_KEY_LENGTH + 1)
+        || !TEST_int_eq(EVP_CIPHER_get_block_size(cipher), 1)
+        || !TEST_int_eq(EVP_CIPHER_get_iv_length(cipher), 12)
+        || !TEST_true((EVP_CIPHER_get_flags(cipher)
+                           & EVP_CIPH_FLAG_AEAD_CIPHER)
+            != 0)
+        || !TEST_int_eq(EVP_CIPHER_get_mode(cipher), EVP_CIPH_GCM_MODE)
+        || !TEST_ptr(ctx = EVP_CIPHER_CTX_new())
+        || !TEST_true(EVP_EncryptInit_ex2(ctx, cipher, NULL, NULL, NULL))
+        || !TEST_int_eq(EVP_CIPHER_CTX_get_tag_length(ctx),
+            EVP_GCM_TLS_TAG_LEN))
+        goto end;
+
+    ret = 1;
+end:
+    EVP_CIPHER_CTX_free(ctx);
+    EVP_CIPHER_free(cipher);
+    return ret;
+}
 
 static void count_server_hellos_cb(int write_p, int version, int content_type,
     const void *buf, size_t len, SSL *ssl, void *arg)
@@ -578,6 +609,7 @@ int setup_tests(void)
         || !TEST_ptr(tlsprov = OSSL_PROVIDER_load(libctx, "tls-provider")))
         return 0;
 
+    ADD_TEST(test_oversized_aead_fixture);
     ADD_ALL_TESTS(test_ciphersuite_mode, OSSL_NELEM(ciphersuite_tests));
     ADD_ALL_TESTS(test_provider_handshake, 2);
     ADD_TEST(test_provider_hrr);
