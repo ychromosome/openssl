@@ -208,7 +208,7 @@ static int test_injected_ticket_preserves_marker(void)
         || !TEST_int_eq(nst_written, 0)
         || !TEST_int_eq(nst_read, 0)
         || !TEST_ptr(builtin = SSL_CIPHER_find(serverssl,
-            builtin_ciphersuite_id))
+                         builtin_ciphersuite_id))
         || !TEST_true(ssl_session_set_cipher(serverconn->session, builtin)))
         goto end;
 
