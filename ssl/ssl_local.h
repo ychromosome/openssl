@@ -1285,6 +1285,7 @@ struct ssl_ctx_st {
     size_t group_list_max_len;
 
     STACK_OF(SSL_CIPHER) *provider_ciphersuites;
+    STACK_OF(SSL_CIPHER) *provider_ciphersuites_by_name;
 
     TLS_SIGALG_INFO *sigalg_list;
     size_t sigalg_list_len;

@@ -1,101 +1,78 @@
 Provider-defined TLS 1.3 ciphersuites
 =====================================
 
-Overview
---------
+Scope
+-----
 
-The `TLS-CIPHERSUITE` capability adds provider-defined TLS 1.3 ciphersuites to
-an `SSL_CTX`.  Providers supply the wire ID, security bits and EVP algorithm
-names.  Libssl retains the fetched algorithms and owns the TLS 1.3 key schedule
-and record layer.
+The `TLS-CIPHERSUITE` capability adds TLS 1.3 ciphersuites to an `SSL_CTX`.
+It is not used by TLS 1.2, DTLS or QUIC. Provider suites are absent from the
+default list and require explicit selection.
 
-Provider ciphersuites are discovered during `SSL_CTX_new_ex()`, require
-explicit selection and are not available to TLS 1.2, DTLS or QUIC.  Sessions
-using them cannot be resumed, cached or serialised and do not issue tickets.
-
-No public API or ABI symbol is added.  Resumption, write limits, QUIC, kTLS,
-custom record methods and discovery after context creation are out of scope.
+The capability adds public source API macros but no public function or ABI
+symbol. Discovery after `SSL_CTX` creation and session resumption are not
+supported.
 
 Capability
 ----------
 
-Each callback describes one ciphersuite.  The following parameters are
-mandatory; unknown parameters are ignored.
+Every callback supplies these mandatory parameters. Unknown parameters are
+ignored.
 
 | Parameter | Type | Constraint |
 |-----------|------|------------|
 | `tls-ciphersuite-name` | UTF8 | Printable ASCII, 1--255 bytes, no colon, unique ignoring case |
-| `tls-ciphersuite-code-point` | unsigned integer | Nonzero 16-bit value; no GREASE or collision |
-| `tls-ciphersuite-aead-name` | UTF8 | Fetchable fixed-length AEAD; key length at most `EVP_MAX_KEY_LENGTH`, 12-byte IV, 16-byte tag, block size 1, non-CCM |
-| `tls-ciphersuite-digest-name` | UTF8 | Fetchable SHA2-256 or SHA2-384 |
-| `tls-ciphersuite-security-bits` | unsigned integer | At least 128 and no greater than the AEAD key size |
+| `tls-ciphersuite-code-point` | unsigned integer | Nonzero 16-bit value, not GREASE, unique in the context and not assigned to a built-in suite |
+| `tls-ciphersuite-aead-name` | UTF8 | AEAD fetch name; fixed positive key length no greater than `EVP_MAX_KEY_LENGTH`, 12-byte IV, block size 1, non-CCM |
+| `tls-ciphersuite-digest-name` | UTF8 | SHA2-256 or SHA2-384 fetch name |
+| `tls-ciphersuite-security-bits` | unsigned integer | 128 or more; no greater than the AEAD key size |
+| `tls-ciphersuite-tag-length` | unsigned integer | 16 |
 
-Libssl fetches the `EVP_CIPHER` and `EVP_MD` with the `SSL_CTX` library context
-and property query and retains both objects.  The implementations need not
-come from the provider advertising the capability.  This follows TLS-GROUP
-name and property lookup rather than TLS-SIGALG origin matching.
+The AEAD profile has the TLS 1.3 fixed-expansion shape: no length pre-set and
+a 16-byte authentication tag. The provider declares the tag length because
+`EVP_CIPHER` has no general static tag-length accessor.
+
+Libssl fetches the AEAD and digest using the context library context and
+property query and retains both objects. The implementations need not come
+from the provider that advertises the suite. This follows TLS-GROUP's
+name-based availability check and permits provider composition.
 
 Discovery
 ---------
 
-The registry is populated while the `SSL_CTX` is created and is immutable
-afterwards.  Providers loaded later are not added to an existing context.
+Discovery runs during `SSL_CTX_new_ex()` for methods that can negotiate TLS
+1.3. The owned descriptors are sorted by wire ID and a shallow name index is
+built for binary lookup. The registry is then immutable. A provider that does
+not implement the capability, or implements it with no entries, does not
+affect context creation.
 
-| Callbacks | Validation failure | Provider return | Result |
-|-----------|--------------------|-----------------|--------|
-| none | no | 0 or 1 | Continue |
-| one or more | no | 1 | Accept |
-| any | yes | any | Fail context creation |
-| one or more | no | 0 | Fail context creation |
+An entry whose AEAD or digest cannot be fetched under the context property
+query is skipped. A malformed entry, a collision, a profile violation, or a
+provider that aborts after supplying an entry causes context creation to fail.
+Allocation and registry failures are also fatal.
 
-A provider that does not implement the capability is ignored, as for
-TLS-SIGALG.  Once a provider returns a descriptor, invalid data or an aborted
-enumeration fails context creation.  `SSL_CTX` cleanup releases any partial
-registry.
+Selection and context changes
+-----------------------------
 
-Discovery is method-independent.  DTLS and QUIC contexts can contain a
-registry, but their lookup paths do not expose its entries.
+`SSL_CTX_set_ciphersuites()` and `SSL_set_ciphersuites()` select a provider
+suite by its capability name. `SSL_CIPHER_get_name()` returns this name.
+The capability does not supply a standard name, so
+`SSL_CIPHER_standard_name()` returns `NULL`.
 
-Selection
----------
+Wire IDs resolve through the connection's original `session_ctx`.
+`SSL_set_SSL_CTX()` keeps its existing behavior. Switching to a context with
+a different library context or property query is outside this version's
+scope.
 
-`SSL_CTX_set_ciphersuites()` and `SSL_set_ciphersuites()` select provider
-ciphersuites by name.  The default list is unchanged.  Wire IDs are resolved
-against the connection's original `session_ctx` registry after the built-in
-lookup.
+Ownership and sessions
+----------------------
 
-Descriptors are local to an `SSL_CTX`.  Dynamic list matching uses the wire ID
-and canonicalises the result to `session_ctx`.  Built-in suites retain
-pointer-identity matching.
+The context registry owns each descriptor. A descriptor retains its AEAD and
+digest. `SSL_SESSION` holds a counted descriptor reference; other SSL stacks
+borrow descriptors kept alive by `session_ctx`.
 
-Ownership
----------
+Once a session has held a provider suite, it cannot be resumed, cached,
+serialised or ticketed. This state survives session duplication and later
+cipher replacement. `d2i_SSL_SESSION()` resolves built-in suites only.
 
-The context registry owns each dynamic descriptor.  A descriptor owns its
-fetched cipher and digest.  An `SSL_SESSION` can hold a counted descriptor
-reference.  Other SSL-side stacks borrow descriptors canonicalised to the
-registry kept alive by the connection's `session_ctx` reference.  Refcount
-operations remain no-ops for static table entries.
-
-Stored dynamic descriptors are either in the `session_ctx` registry, held by an
-`SSL_SESSION` reference, or borrowed through a stack owned by the descriptor's
-context.
-
-`SSL_set_SSL_CTX()`
--------------------
-
-`SSL_set_SSL_CTX()` keeps its existing behaviour.  Provider ciphersuites
-continue to resolve through `session_ctx`; no context-equivalence policy is
-added.  Switching to a context with a different library context or property
-query remains out of scope.  A context that lacks the suite fails cleanly.
-
-Sessions
---------
-
-Assigning a provider ciphersuite sets a marker that survives session
-duplication and later assignment of a built-in cipher.  The marker is not
-encoded in ASN.1.  It prevents resumption, automatic and direct cache
-insertion, serialisation and automatic or explicit ticket generation.
-
-`d2i_SSL_SESSION()` resolves only built-in ciphersuites and cannot create a
-marked session.
+Record usage limits remain governed by libssl's existing TLS 1.3 behavior.
+This capability does not add per-suite limits.

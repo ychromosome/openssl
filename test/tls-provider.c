@@ -7,6 +7,8 @@
  * https://www.openssl.org/source/license.html
  */
 
+#include <limits.h>
+#include <stdio.h>
 #include <string.h>
 #include <openssl/core_names.h>
 #include <openssl/core_dispatch.h>
@@ -398,6 +400,416 @@ static const OSSL_PARAM xor_sig_12_params[] = {
     OSSL_PARAM_END
 };
 
+typedef struct {
+    OSSL_LIB_CTX *libctx;
+} PROV_XOR_CTX;
+
+#define PROV_XOR_LIBCTX_OF(provctx) (((PROV_XOR_CTX *)provctx)->libctx)
+
+#define TLS_TEST_AEAD128_NAME "TLS-TEST-AES-128-GCM"
+#define TLS_TEST_AEAD256_NAME "TLS-TEST-AES-256-GCM"
+#define TLS_TEST_SHA256_NAME "TLS-TEST-SHA2-256"
+#define TLS_TEST_SHA384_NAME "TLS-TEST-SHA2-384"
+
+typedef struct {
+    EVP_CIPHER_CTX *subctx;
+} TLS_PROXY_CIPHER_CTX;
+
+static void *tls_proxy_cipher_newctx(void *provctx, const char *name)
+{
+    TLS_PROXY_CIPHER_CTX *ctx = OPENSSL_zalloc(sizeof(*ctx));
+    EVP_CIPHER *cipher = NULL;
+
+    if (ctx == NULL)
+        return NULL;
+    ctx->subctx = EVP_CIPHER_CTX_new();
+    cipher = EVP_CIPHER_fetch(PROV_XOR_LIBCTX_OF(provctx), name,
+        "provider=default");
+    if (ctx->subctx == NULL || cipher == NULL
+        || EVP_CipherInit_ex2(ctx->subctx, cipher, NULL, NULL, 1, NULL) <= 0) {
+        EVP_CIPHER_free(cipher);
+        EVP_CIPHER_CTX_free(ctx->subctx);
+        OPENSSL_free(ctx);
+        return NULL;
+    }
+    EVP_CIPHER_free(cipher);
+    return ctx;
+}
+
+static void *tls_proxy_aes128_newctx(void *provctx)
+{
+    return tls_proxy_cipher_newctx(provctx, "AES-128-GCM");
+}
+
+static void *tls_proxy_aes256_newctx(void *provctx)
+{
+    return tls_proxy_cipher_newctx(provctx, "AES-256-GCM");
+}
+
+static void tls_proxy_cipher_freectx(void *vctx)
+{
+    TLS_PROXY_CIPHER_CTX *ctx = vctx;
+
+    if (ctx != NULL)
+        EVP_CIPHER_CTX_free(ctx->subctx);
+    OPENSSL_free(ctx);
+}
+
+static void *tls_proxy_cipher_dupctx(void *vctx)
+{
+    TLS_PROXY_CIPHER_CTX *src = vctx;
+    TLS_PROXY_CIPHER_CTX *dst = OPENSSL_zalloc(sizeof(*dst));
+
+    if (dst == NULL)
+        return NULL;
+    dst->subctx = EVP_CIPHER_CTX_dup(src->subctx);
+    if (dst->subctx == NULL) {
+        OPENSSL_free(dst);
+        return NULL;
+    }
+    return dst;
+}
+
+static int tls_proxy_cipher_init(void *vctx, const unsigned char *key,
+    size_t keylen, const unsigned char *iv, size_t ivlen,
+    const OSSL_PARAM params[], int enc)
+{
+    TLS_PROXY_CIPHER_CTX *ctx = vctx;
+
+    if ((key != NULL
+            && keylen != (size_t)EVP_CIPHER_CTX_get_key_length(ctx->subctx))
+        || (iv != NULL
+            && ivlen != (size_t)EVP_CIPHER_CTX_get_iv_length(ctx->subctx)))
+        return 0;
+    return EVP_CipherInit_ex2(ctx->subctx, NULL, key, iv, enc, params) > 0;
+}
+
+static int tls_proxy_cipher_einit(void *vctx, const unsigned char *key,
+    size_t keylen, const unsigned char *iv, size_t ivlen,
+    const OSSL_PARAM params[])
+{
+    return tls_proxy_cipher_init(vctx, key, keylen, iv, ivlen, params, 1);
+}
+
+static int tls_proxy_cipher_dinit(void *vctx, const unsigned char *key,
+    size_t keylen, const unsigned char *iv, size_t ivlen,
+    const OSSL_PARAM params[])
+{
+    return tls_proxy_cipher_init(vctx, key, keylen, iv, ivlen, params, 0);
+}
+
+static int tls_proxy_cipher_update(void *vctx, unsigned char *out,
+    size_t *outl, size_t outsize, const unsigned char *in, size_t inl)
+{
+    TLS_PROXY_CIPHER_CTX *ctx = vctx;
+    int len;
+
+    if (outl == NULL || inl > INT_MAX || (out != NULL && outsize < inl)
+        || EVP_CipherUpdate(ctx->subctx, out, &len, in, (int)inl) <= 0)
+        return 0;
+    *outl = (size_t)len;
+    return 1;
+}
+
+static int tls_proxy_cipher_final(void *vctx, unsigned char *out,
+    size_t *outl, size_t outsize)
+{
+    TLS_PROXY_CIPHER_CTX *ctx = vctx;
+    int len;
+
+    if (outl == NULL || EVP_CipherFinal_ex(ctx->subctx, out, &len) <= 0
+        || (size_t)len > outsize)
+        return 0;
+    *outl = (size_t)len;
+    return 1;
+}
+
+static int tls_proxy_cipher_get_params(OSSL_PARAM params[], size_t keylen)
+{
+    OSSL_PARAM *p;
+    size_t blocksize = 1, ivlen = 12;
+    unsigned int mode = EVP_CIPH_GCM_MODE;
+    int value = 1;
+
+    p = OSSL_PARAM_locate(params, OSSL_CIPHER_PARAM_MODE);
+    if (p != NULL && !OSSL_PARAM_set_uint(p, mode))
+        return 0;
+    p = OSSL_PARAM_locate(params, OSSL_CIPHER_PARAM_KEYLEN);
+    if (p != NULL && !OSSL_PARAM_set_size_t(p, keylen))
+        return 0;
+    p = OSSL_PARAM_locate(params, OSSL_CIPHER_PARAM_IVLEN);
+    if (p != NULL && !OSSL_PARAM_set_size_t(p, ivlen))
+        return 0;
+    p = OSSL_PARAM_locate(params, OSSL_CIPHER_PARAM_BLOCK_SIZE);
+    if (p != NULL && !OSSL_PARAM_set_size_t(p, blocksize))
+        return 0;
+    p = OSSL_PARAM_locate(params, OSSL_CIPHER_PARAM_AEAD);
+    if (p != NULL && !OSSL_PARAM_set_int(p, value))
+        return 0;
+    p = OSSL_PARAM_locate(params, OSSL_CIPHER_PARAM_CUSTOM_IV);
+    if (p != NULL && !OSSL_PARAM_set_int(p, value))
+        return 0;
+    return 1;
+}
+
+static int tls_proxy_aes128_get_params(OSSL_PARAM params[])
+{
+    return tls_proxy_cipher_get_params(params, 16);
+}
+
+static int tls_proxy_aes256_get_params(OSSL_PARAM params[])
+{
+    return tls_proxy_cipher_get_params(params, 32);
+}
+
+static int tls_proxy_cipher_get_ctx_params(void *vctx, OSSL_PARAM params[])
+{
+    TLS_PROXY_CIPHER_CTX *ctx = vctx;
+
+    return EVP_CIPHER_CTX_get_params(ctx->subctx, params) > 0;
+}
+
+static int tls_proxy_cipher_set_ctx_params(void *vctx,
+    const OSSL_PARAM params[])
+{
+    TLS_PROXY_CIPHER_CTX *ctx = vctx;
+
+    return EVP_CIPHER_CTX_set_params(ctx->subctx, params) > 0;
+}
+
+static const OSSL_PARAM tls_proxy_cipher_gettable_params[] = {
+    OSSL_PARAM_uint(OSSL_CIPHER_PARAM_MODE, NULL),
+    OSSL_PARAM_size_t(OSSL_CIPHER_PARAM_KEYLEN, NULL),
+    OSSL_PARAM_size_t(OSSL_CIPHER_PARAM_IVLEN, NULL),
+    OSSL_PARAM_size_t(OSSL_CIPHER_PARAM_BLOCK_SIZE, NULL),
+    OSSL_PARAM_int(OSSL_CIPHER_PARAM_AEAD, NULL),
+    OSSL_PARAM_int(OSSL_CIPHER_PARAM_CUSTOM_IV, NULL),
+    OSSL_PARAM_END
+};
+
+static const OSSL_PARAM *tls_proxy_cipher_gettable(ossl_unused void *provctx)
+{
+    return tls_proxy_cipher_gettable_params;
+}
+
+static const OSSL_PARAM tls_proxy_cipher_gettable_ctx_params[] = {
+    OSSL_PARAM_size_t(OSSL_CIPHER_PARAM_KEYLEN, NULL),
+    OSSL_PARAM_size_t(OSSL_CIPHER_PARAM_IVLEN, NULL),
+    OSSL_PARAM_size_t(OSSL_CIPHER_PARAM_AEAD_TAGLEN, NULL),
+    OSSL_PARAM_octet_string(OSSL_CIPHER_PARAM_AEAD_TAG, NULL, 0),
+    OSSL_PARAM_END
+};
+
+static const OSSL_PARAM *tls_proxy_cipher_gettable_ctx(
+    ossl_unused void *cctx, ossl_unused void *provctx)
+{
+    return tls_proxy_cipher_gettable_ctx_params;
+}
+
+static const OSSL_PARAM tls_proxy_cipher_settable_ctx_params[] = {
+    OSSL_PARAM_size_t(OSSL_CIPHER_PARAM_IVLEN, NULL),
+    OSSL_PARAM_octet_string(OSSL_CIPHER_PARAM_AEAD_TAG, NULL, 0),
+    OSSL_PARAM_uint(OSSL_CIPHER_PARAM_PADDING, NULL),
+    OSSL_PARAM_END
+};
+
+static const OSSL_PARAM *tls_proxy_cipher_settable_ctx(
+    ossl_unused void *cctx, ossl_unused void *provctx)
+{
+    return tls_proxy_cipher_settable_ctx_params;
+}
+
+#define TLS_PROXY_CIPHER_DISPATCH(newctx, get_params)                           \
+    { OSSL_FUNC_CIPHER_NEWCTX, (void (*)(void))newctx },                        \
+        { OSSL_FUNC_CIPHER_FREECTX, (void (*)(void))tls_proxy_cipher_freectx }, \
+        { OSSL_FUNC_CIPHER_DUPCTX, (void (*)(void))tls_proxy_cipher_dupctx },   \
+        { OSSL_FUNC_CIPHER_ENCRYPT_INIT,                                        \
+            (void (*)(void))tls_proxy_cipher_einit },                           \
+        { OSSL_FUNC_CIPHER_DECRYPT_INIT,                                        \
+            (void (*)(void))tls_proxy_cipher_dinit },                           \
+        { OSSL_FUNC_CIPHER_UPDATE, (void (*)(void))tls_proxy_cipher_update },   \
+        { OSSL_FUNC_CIPHER_FINAL, (void (*)(void))tls_proxy_cipher_final },     \
+        { OSSL_FUNC_CIPHER_GET_PARAMS, (void (*)(void))get_params },            \
+        { OSSL_FUNC_CIPHER_GET_CTX_PARAMS,                                      \
+            (void (*)(void))tls_proxy_cipher_get_ctx_params },                  \
+        { OSSL_FUNC_CIPHER_SET_CTX_PARAMS,                                      \
+            (void (*)(void))tls_proxy_cipher_set_ctx_params },                  \
+        { OSSL_FUNC_CIPHER_GETTABLE_PARAMS,                                     \
+            (void (*)(void))tls_proxy_cipher_gettable },                        \
+        { OSSL_FUNC_CIPHER_GETTABLE_CTX_PARAMS,                                 \
+            (void (*)(void))tls_proxy_cipher_gettable_ctx },                    \
+        { OSSL_FUNC_CIPHER_SETTABLE_CTX_PARAMS,                                 \
+            (void (*)(void))tls_proxy_cipher_settable_ctx },                    \
+        OSSL_DISPATCH_END
+
+static const OSSL_DISPATCH tls_proxy_aes128_functions[] = {
+    TLS_PROXY_CIPHER_DISPATCH(tls_proxy_aes128_newctx,
+        tls_proxy_aes128_get_params)
+};
+
+static const OSSL_DISPATCH tls_proxy_aes256_functions[] = {
+    TLS_PROXY_CIPHER_DISPATCH(tls_proxy_aes256_newctx,
+        tls_proxy_aes256_get_params)
+};
+
+typedef struct {
+    EVP_MD *md;
+    EVP_MD_CTX *subctx;
+} TLS_PROXY_DIGEST_CTX;
+
+static void *tls_proxy_digest_newctx(void *provctx, const char *name)
+{
+    TLS_PROXY_DIGEST_CTX *ctx = OPENSSL_zalloc(sizeof(*ctx));
+
+    if (ctx == NULL)
+        return NULL;
+    ctx->subctx = EVP_MD_CTX_new();
+    ctx->md = EVP_MD_fetch(PROV_XOR_LIBCTX_OF(provctx), name,
+        "provider=default");
+    if (ctx->subctx == NULL || ctx->md == NULL) {
+        EVP_MD_CTX_free(ctx->subctx);
+        EVP_MD_free(ctx->md);
+        OPENSSL_free(ctx);
+        return NULL;
+    }
+    return ctx;
+}
+
+static void *tls_proxy_sha256_newctx(void *provctx)
+{
+    return tls_proxy_digest_newctx(provctx, "SHA2-256");
+}
+
+static void *tls_proxy_sha384_newctx(void *provctx)
+{
+    return tls_proxy_digest_newctx(provctx, "SHA2-384");
+}
+
+static void tls_proxy_digest_freectx(void *vctx)
+{
+    TLS_PROXY_DIGEST_CTX *ctx = vctx;
+
+    if (ctx != NULL) {
+        EVP_MD_CTX_free(ctx->subctx);
+        EVP_MD_free(ctx->md);
+    }
+    OPENSSL_free(ctx);
+}
+
+static void *tls_proxy_digest_dupctx(void *vctx)
+{
+    TLS_PROXY_DIGEST_CTX *src = vctx;
+    TLS_PROXY_DIGEST_CTX *dst = OPENSSL_zalloc(sizeof(*dst));
+
+    if (dst == NULL || !EVP_MD_up_ref(src->md)) {
+        OPENSSL_free(dst);
+        return NULL;
+    }
+    dst->md = src->md;
+    dst->subctx = EVP_MD_CTX_dup(src->subctx);
+    if (dst->subctx == NULL) {
+        tls_proxy_digest_freectx(dst);
+        return NULL;
+    }
+    return dst;
+}
+
+static int tls_proxy_digest_init(void *vctx, const OSSL_PARAM params[])
+{
+    TLS_PROXY_DIGEST_CTX *ctx = vctx;
+
+    return EVP_DigestInit_ex2(ctx->subctx, ctx->md, params) > 0;
+}
+
+static int tls_proxy_digest_update(void *vctx, const unsigned char *in,
+    size_t inl)
+{
+    TLS_PROXY_DIGEST_CTX *ctx = vctx;
+
+    return EVP_DigestUpdate(ctx->subctx, in, inl) > 0;
+}
+
+static int tls_proxy_digest_final(void *vctx, unsigned char *out,
+    size_t *outl, size_t outsize)
+{
+    TLS_PROXY_DIGEST_CTX *ctx = vctx;
+    unsigned int len;
+
+    if (outl == NULL || outsize < (size_t)EVP_MD_get_size(ctx->md)
+        || EVP_DigestFinal_ex(ctx->subctx, out, &len) <= 0)
+        return 0;
+    *outl = len;
+    return 1;
+}
+
+static int tls_proxy_digest_get_params(OSSL_PARAM params[], size_t size,
+    size_t blocksize)
+{
+    OSSL_PARAM *p;
+    int value;
+
+    p = OSSL_PARAM_locate(params, OSSL_DIGEST_PARAM_SIZE);
+    if (p != NULL && !OSSL_PARAM_set_size_t(p, size))
+        return 0;
+    p = OSSL_PARAM_locate(params, OSSL_DIGEST_PARAM_BLOCK_SIZE);
+    if (p != NULL && !OSSL_PARAM_set_size_t(p, blocksize))
+        return 0;
+    value = 0;
+    p = OSSL_PARAM_locate(params, OSSL_DIGEST_PARAM_XOF);
+    if (p != NULL && !OSSL_PARAM_set_int(p, value))
+        return 0;
+    value = 1;
+    p = OSSL_PARAM_locate(params, OSSL_DIGEST_PARAM_ALGID_ABSENT);
+    if (p != NULL && !OSSL_PARAM_set_int(p, value))
+        return 0;
+    return 1;
+}
+
+static int tls_proxy_sha256_get_params(OSSL_PARAM params[])
+{
+    return tls_proxy_digest_get_params(params, 32, 64);
+}
+
+static int tls_proxy_sha384_get_params(OSSL_PARAM params[])
+{
+    return tls_proxy_digest_get_params(params, 48, 128);
+}
+
+static const OSSL_PARAM tls_proxy_digest_gettable_params[] = {
+    OSSL_PARAM_size_t(OSSL_DIGEST_PARAM_SIZE, NULL),
+    OSSL_PARAM_size_t(OSSL_DIGEST_PARAM_BLOCK_SIZE, NULL),
+    OSSL_PARAM_int(OSSL_DIGEST_PARAM_XOF, NULL),
+    OSSL_PARAM_int(OSSL_DIGEST_PARAM_ALGID_ABSENT, NULL),
+    OSSL_PARAM_END
+};
+
+static const OSSL_PARAM *tls_proxy_digest_gettable(ossl_unused void *provctx)
+{
+    return tls_proxy_digest_gettable_params;
+}
+
+#define TLS_PROXY_DIGEST_DISPATCH(newctx, get_params)                           \
+    { OSSL_FUNC_DIGEST_NEWCTX, (void (*)(void))newctx },                        \
+        { OSSL_FUNC_DIGEST_FREECTX, (void (*)(void))tls_proxy_digest_freectx }, \
+        { OSSL_FUNC_DIGEST_DUPCTX, (void (*)(void))tls_proxy_digest_dupctx },   \
+        { OSSL_FUNC_DIGEST_INIT, (void (*)(void))tls_proxy_digest_init },       \
+        { OSSL_FUNC_DIGEST_UPDATE, (void (*)(void))tls_proxy_digest_update },   \
+        { OSSL_FUNC_DIGEST_FINAL, (void (*)(void))tls_proxy_digest_final },     \
+        { OSSL_FUNC_DIGEST_GET_PARAMS, (void (*)(void))get_params },            \
+        { OSSL_FUNC_DIGEST_GETTABLE_PARAMS,                                     \
+            (void (*)(void))tls_proxy_digest_gettable },                        \
+        OSSL_DISPATCH_END
+
+static const OSSL_DISPATCH tls_proxy_sha256_functions[] = {
+    TLS_PROXY_DIGEST_DISPATCH(tls_proxy_sha256_newctx,
+        tls_proxy_sha256_get_params)
+};
+
+static const OSSL_DISPATCH tls_proxy_sha384_functions[] = {
+    TLS_PROXY_DIGEST_DISPATCH(tls_proxy_sha384_newctx,
+        tls_proxy_sha384_get_params)
+};
+
 /* Test-only AEAD with a key one byte larger than EVP_MAX_KEY_LENGTH. */
 #define TLS_TEST_OVERSIZED_AEAD_NAME "TLS-TEST-AEAD-65"
 
@@ -503,17 +915,31 @@ static const OSSL_DISPATCH tls_oversized_aead_functions[] = {
 };
 
 static const OSSL_ALGORITHM tls_prov_ciphers[] = {
+    { TLS_TEST_AEAD128_NAME, "provider=tls-provider",
+        tls_proxy_aes128_functions },
+    { TLS_TEST_AEAD256_NAME, "provider=tls-provider",
+        tls_proxy_aes256_functions },
     { TLS_TEST_OVERSIZED_AEAD_NAME, "provider=tls-provider",
         tls_oversized_aead_functions },
     { NULL, NULL, NULL }
 };
 
+static const OSSL_ALGORITHM tls_prov_digests[] = {
+    { TLS_TEST_SHA256_NAME ":SHA2-256:SHA256", "provider=tls-provider",
+        tls_proxy_sha256_functions },
+    { TLS_TEST_SHA384_NAME ":SHA2-384:SHA384", "provider=tls-provider",
+        tls_proxy_sha384_functions },
+    { NULL, NULL, NULL }
+};
+
 /* Test-only TLS-CIPHERSUITE capability data. */
 static char tls_ciphersuite_name[] = "TLS_TEST_PROVIDER_AES_128_GCM_SHA256";
-static char tls_ciphersuite_aead[] = "AES-128-GCM";
-static char tls_ciphersuite_digest[] = "SHA2-256";
-static unsigned int tls_ciphersuite_codepoint = 0xfea0;
+static char tls_ciphersuite_aead[] = TLS_TEST_AEAD128_NAME;
+static char tls_ciphersuite_digest[] = TLS_TEST_SHA256_NAME;
+static unsigned int tls_ciphersuite_codepoint = 0xffa0;
 static unsigned int tls_ciphersuite_secbits = 128;
+static unsigned int tls_ciphersuite_taglen = EVP_GCM_TLS_TAG_LEN;
+#define TLS_TEST_MANY_COUNT 128
 static const OSSL_PARAM tls_ciphersuite_params[] = {
     OSSL_PARAM_utf8_string(OSSL_CAPABILITY_TLS_CIPHERSUITE_NAME,
         tls_ciphersuite_name, sizeof(tls_ciphersuite_name)),
@@ -525,6 +951,8 @@ static const OSSL_PARAM tls_ciphersuite_params[] = {
         tls_ciphersuite_digest, sizeof(tls_ciphersuite_digest)),
     OSSL_PARAM_uint(OSSL_CAPABILITY_TLS_CIPHERSUITE_SECURITY_BITS,
         &tls_ciphersuite_secbits),
+    OSSL_PARAM_uint(OSSL_CAPABILITY_TLS_CIPHERSUITE_TAG_LENGTH,
+        &tls_ciphersuite_taglen),
     OSSL_PARAM_END
 };
 
@@ -534,6 +962,7 @@ enum {
     TLS_CIPHERSUITE_AEAD_PARAM,
     TLS_CIPHERSUITE_DIGEST_PARAM,
     TLS_CIPHERSUITE_SECBITS_PARAM,
+    TLS_CIPHERSUITE_TAGLEN_PARAM,
     TLS_CIPHERSUITE_END_PARAM
 };
 
@@ -548,22 +977,27 @@ static int tls_prov_get_ciphersuites(OSSL_CALLBACK *cb, void *arg)
 {
     OSSL_PARAM params[OSSL_NELEM(tls_ciphersuite_params) + 1];
     char second_name[] = "TLS_TEST_PROVIDER_AES_128_GCM_SHA256_B";
+    char duplicate_name[] = "tls_test_provider_aes_128_gcm_sha256";
+    char many_name[64];
+    char composed_name[] = "TLS_TEST_COMPOSED_AES_128_GCM_SHA256";
     char invalid_name[] = "TLS:TEST:INVALID";
     char builtin_name[] = "TLS_AES_128_GCM_SHA256";
+    char composed_aead[] = "AES-128-GCM";
+    char composed_digest[] = "SHA2-256";
     char non_aead[] = "AES-128-ECB";
     char ccm[] = "AES-128-CCM";
     char unavailable[] = "TLS-TEST-NO-SUCH-AEAD";
+    char unavailable_digest[] = "TLS-TEST-NO-SUCH-DIGEST";
     char oversized[] = TLS_TEST_OVERSIZED_AEAD_NAME;
     char bad_digest[] = "SHA2-512";
     char sha384_name[] = "TLS_TEST_PROVIDER_AES_256_GCM_SHA384";
-    char aes256_gcm[] = "AES-256-GCM";
-    char sha384[] = "SHA2-384";
-    unsigned int second_codepoint = 0xfea1;
-    unsigned int sha384_codepoint = 0xfea2;
+    char aes256_gcm[] = TLS_TEST_AEAD256_NAME;
+    char sha384[] = TLS_TEST_SHA384_NAME;
+    unsigned int second_codepoint = 0xffa1;
+    unsigned int sha384_codepoint = 0xffa2;
     unsigned int sha384_secbits = 256;
-    unsigned int bad_codepoint;
-    unsigned int bad_secbits;
-    int ret;
+    unsigned int bad_codepoint, bad_secbits, bad_taglen, many_codepoint;
+    int i, ret;
 
     if (tls_ciphersuite_mode == NULL
         || strcmp(tls_ciphersuite_mode, "unsupported") == 0)
@@ -575,6 +1009,15 @@ static int tls_prov_get_ciphersuites(OSSL_CALLBACK *cb, void *arg)
 
     if (strcmp(tls_ciphersuite_mode, "valid") == 0)
         return cb(params, arg);
+    if (strcmp(tls_ciphersuite_mode, "valid-composed") == 0) {
+        params[TLS_CIPHERSUITE_NAME_PARAM].data = composed_name;
+        params[TLS_CIPHERSUITE_NAME_PARAM].data_size = sizeof(composed_name);
+        params[TLS_CIPHERSUITE_AEAD_PARAM].data = composed_aead;
+        params[TLS_CIPHERSUITE_AEAD_PARAM].data_size = sizeof(composed_aead);
+        params[TLS_CIPHERSUITE_DIGEST_PARAM].data = composed_digest;
+        params[TLS_CIPHERSUITE_DIGEST_PARAM].data_size = sizeof(composed_digest);
+        return cb(params, arg);
+    }
     if (strcmp(tls_ciphersuite_mode, "valid-sha384") == 0) {
         params[TLS_CIPHERSUITE_NAME_PARAM].data = sha384_name;
         params[TLS_CIPHERSUITE_NAME_PARAM].data_size = sizeof(sha384_name);
@@ -601,6 +1044,21 @@ static int tls_prov_get_ciphersuites(OSSL_CALLBACK *cb, void *arg)
         params[TLS_CIPHERSUITE_CODEPOINT_PARAM].data = &second_codepoint;
         return cb(params, arg);
     }
+    if (strcmp(tls_ciphersuite_mode, "valid-many") == 0) {
+        for (i = 0; i < TLS_TEST_MANY_COUNT; i++) {
+            snprintf(many_name, sizeof(many_name),
+                "TLS_TEST_PROVIDER_INDEX_%03d", i);
+            many_codepoint = 0xff00U + TLS_TEST_MANY_COUNT - 1U
+                - (unsigned int)i;
+            params[TLS_CIPHERSUITE_NAME_PARAM].data = many_name;
+            params[TLS_CIPHERSUITE_NAME_PARAM].data_size
+                = strlen(many_name) + 1;
+            params[TLS_CIPHERSUITE_CODEPOINT_PARAM].data = &many_codepoint;
+            if (cb(params, arg) == 0)
+                return 0;
+        }
+        return 1;
+    }
     if (strcmp(tls_ciphersuite_mode, "bad-name") == 0) {
         params[TLS_CIPHERSUITE_NAME_PARAM].data = invalid_name;
         params[TLS_CIPHERSUITE_NAME_PARAM].data_size = sizeof(invalid_name);
@@ -608,10 +1066,15 @@ static int tls_prov_get_ciphersuites(OSSL_CALLBACK *cb, void *arg)
         params[TLS_CIPHERSUITE_NAME_PARAM].data = builtin_name;
         params[TLS_CIPHERSUITE_NAME_PARAM].data_size = sizeof(builtin_name);
     } else if (strcmp(tls_ciphersuite_mode, "zero-codepoint") == 0
+        || strcmp(tls_ciphersuite_mode, "registered-like-codepoint") == 0
         || strcmp(tls_ciphersuite_mode, "grease-codepoint") == 0
         || strcmp(tls_ciphersuite_mode, "builtin-codepoint") == 0) {
         if (strcmp(tls_ciphersuite_mode, "zero-codepoint") == 0)
             bad_codepoint = 0;
+        else if (strcmp(tls_ciphersuite_mode,
+                     "registered-like-codepoint")
+            == 0)
+            bad_codepoint = 0xfea0;
         else if (strcmp(tls_ciphersuite_mode, "grease-codepoint") == 0)
             bad_codepoint = 0x0a0a;
         else
@@ -626,12 +1089,18 @@ static int tls_prov_get_ciphersuites(OSSL_CALLBACK *cb, void *arg)
     } else if (strcmp(tls_ciphersuite_mode, "unavailable-aead") == 0) {
         params[TLS_CIPHERSUITE_AEAD_PARAM].data = unavailable;
         params[TLS_CIPHERSUITE_AEAD_PARAM].data_size = sizeof(unavailable);
+    } else if (strcmp(tls_ciphersuite_mode, "unavailable-digest") == 0) {
+        params[TLS_CIPHERSUITE_DIGEST_PARAM].data = unavailable_digest;
+        params[TLS_CIPHERSUITE_DIGEST_PARAM].data_size = sizeof(unavailable_digest);
     } else if (strcmp(tls_ciphersuite_mode, "oversized-key") == 0) {
         params[TLS_CIPHERSUITE_AEAD_PARAM].data = oversized;
         params[TLS_CIPHERSUITE_AEAD_PARAM].data_size = sizeof(oversized);
     } else if (strcmp(tls_ciphersuite_mode, "bad-digest") == 0) {
         params[TLS_CIPHERSUITE_DIGEST_PARAM].data = bad_digest;
         params[TLS_CIPHERSUITE_DIGEST_PARAM].data_size = sizeof(bad_digest);
+    } else if (strcmp(tls_ciphersuite_mode, "bad-tag-length") == 0) {
+        bad_taglen = EVP_GCM_TLS_TAG_LEN - 1;
+        params[TLS_CIPHERSUITE_TAGLEN_PARAM].data = &bad_taglen;
     } else if (strcmp(tls_ciphersuite_mode, "low-security") == 0
         || strcmp(tls_ciphersuite_mode, "excess-security") == 0) {
         bad_secbits = strcmp(tls_ciphersuite_mode, "low-security") == 0
@@ -645,6 +1114,21 @@ static int tls_prov_get_ciphersuites(OSSL_CALLBACK *cb, void *arg)
     } else if (strcmp(tls_ciphersuite_mode, "duplicate-descriptor") == 0) {
         ret = cb(params, arg);
         return ret == 0 ? 0 : cb(params, arg);
+    } else if (strcmp(tls_ciphersuite_mode, "duplicate-codepoint") == 0) {
+        ret = cb(params, arg);
+        if (ret == 0)
+            return 0;
+        params[TLS_CIPHERSUITE_NAME_PARAM].data = second_name;
+        params[TLS_CIPHERSUITE_NAME_PARAM].data_size = sizeof(second_name);
+        return cb(params, arg);
+    } else if (strcmp(tls_ciphersuite_mode, "duplicate-name") == 0) {
+        ret = cb(params, arg);
+        if (ret == 0)
+            return 0;
+        params[TLS_CIPHERSUITE_NAME_PARAM].data = duplicate_name;
+        params[TLS_CIPHERSUITE_NAME_PARAM].data_size = sizeof(duplicate_name);
+        params[TLS_CIPHERSUITE_CODEPOINT_PARAM].data = &second_codepoint;
+        return cb(params, arg);
     } else if (strcmp(tls_ciphersuite_mode, "valid-then-invalid") == 0) {
         ret = cb(params, arg);
         if (ret == 0)
@@ -721,10 +1205,6 @@ static int tls_prov_get_capabilities(void *provctx, const char *capability,
     return ret;
 }
 
-typedef struct {
-    OSSL_LIB_CTX *libctx;
-} PROV_XOR_CTX;
-
 static PROV_XOR_CTX *xor_newprovctx(OSSL_LIB_CTX *libctx)
 {
     PROV_XOR_CTX *prov_ctx = OPENSSL_malloc(sizeof(PROV_XOR_CTX));
@@ -739,8 +1219,6 @@ static PROV_XOR_CTX *xor_newprovctx(OSSL_LIB_CTX *libctx)
     prov_ctx->libctx = libctx;
     return prov_ctx;
 }
-
-#define PROV_XOR_LIBCTX_OF(provctx) (((PROV_XOR_CTX *)provctx)->libctx)
 
 /*
  * Dummy "XOR" Key Exchange and signature algorithm. We just xor the
@@ -3425,6 +3903,8 @@ static const OSSL_ALGORITHM *tls_prov_query(void *provctx, int operation_id,
         return tls_prov_signature;
     case OSSL_OP_CIPHER:
         return tls_prov_ciphers;
+    case OSSL_OP_DIGEST:
+        return tls_prov_digests;
     }
     return NULL;
 }

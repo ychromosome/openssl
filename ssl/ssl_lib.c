@@ -4807,6 +4807,7 @@ void SSL_CTX_free(SSL_CTX *a)
         ssl_evp_cipher_free(a->ssl_cipher_methods[j]);
     for (j = 0; j < SSL_MD_NUM_IDX; j++)
         ssl_evp_md_free(a->ssl_digest_methods[j]);
+    sk_SSL_CIPHER_free(a->provider_ciphersuites_by_name);
     sk_SSL_CIPHER_pop_free(a->provider_ciphersuites,
         ssl_cipher_free_nonconst);
     for (j = 0; j < a->group_list_len; j++) {

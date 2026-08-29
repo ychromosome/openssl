@@ -262,7 +262,9 @@ int setup_tests(void)
         || !TEST_true(OSSL_PROVIDER_add_builtin(libctx, "tls-provider",
             tls_provider_init))
         || !TEST_ptr(defprov = OSSL_PROVIDER_load(libctx, "default"))
-        || !TEST_ptr(tlsprov = OSSL_PROVIDER_load(libctx, "tls-provider")))
+        || !TEST_ptr(tlsprov = OSSL_PROVIDER_load(libctx, "tls-provider"))
+        || !TEST_true(EVP_set_default_properties(libctx,
+            "?provider=tls-provider")))
         return 0;
 
     ADD_TEST(test_builtin_nonresumable_serialises);

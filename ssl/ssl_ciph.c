@@ -211,14 +211,12 @@ void ssl_cipher_stack_canon(const SSL_CONNECTION *s, STACK_OF(SSL_CIPHER) *sk)
 static const SSL_CIPHER *ssl_provider_ciphersuite_by_char(
     const SSL_CONNECTION *s, const unsigned char *ptr)
 {
-    const SSL *ssl;
     uint32_t id;
 
     if (s == NULL)
         return NULL;
 
-    ssl = SSL_CONNECTION_GET_USER_SSL(s);
-    if (IS_QUIC(ssl) || SSL_CONNECTION_IS_DTLS(s))
+    if (IS_QUIC(SSL_CONNECTION_GET_USER_SSL(s)) || SSL_CONNECTION_IS_DTLS(s))
         return NULL;
 
     id = SSL3_CK_CIPHERSUITE_FLAG | ((uint32_t)ptr[0] << 8L)
@@ -2280,7 +2278,7 @@ int SSL_CIPHER_get_digest_nid(const SSL_CIPHER *c)
     int i;
 
     if (c->origin == SSL_CIPHER_ORIGIN_PROVIDER)
-        return EVP_MD_get_type(c->provider_digest);
+        return NID_undef;
     i = ssl_cipher_info_lookup(ssl_cipher_table_mac, c->algorithm_mac);
 
     if (i == -1)

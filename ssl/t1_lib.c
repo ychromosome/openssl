@@ -228,8 +228,10 @@ struct provider_ctx_data_st {
     OSSL_PROVIDER *provider;
 };
 
+#ifndef OPENSSL_NO_TLS1_3
 struct provider_ciphersuite_data_st {
     SSL_CTX *ctx;
+    OSSL_PROVIDER *provider;
     size_t callbacks_seen;
     int callback_failed;
 };
@@ -263,56 +265,45 @@ static int tls_ciphersuite_get_string_param(const OSSL_PARAM params[],
     return 1;
 }
 
+static int ssl_provider_ciphersuite_name_cmp(
+    const SSL_CIPHER *const *ap, const SSL_CIPHER *const *bp)
+{
+    return OPENSSL_strcasecmp((*ap)->name, (*bp)->name);
+}
+#endif
+
 const SSL_CIPHER *ssl_provider_ciphersuite_by_id(const SSL_CTX *ctx,
     uint32_t id)
 {
+    SSL_CIPHER key = { 0 };
     int i;
 
-    if (ctx == NULL)
+    if (ctx == NULL || ctx->provider_ciphersuites == NULL)
         return NULL;
 
-    for (i = 0; i < sk_SSL_CIPHER_num(ctx->provider_ciphersuites); i++) {
-        const SSL_CIPHER *suite = sk_SSL_CIPHER_value(ctx->provider_ciphersuites, i);
-
-        if (suite->id == id)
-            return suite;
-    }
-    return NULL;
+    key.id = id;
+    i = sk_SSL_CIPHER_find(ctx->provider_ciphersuites, &key);
+    return i < 0 ? NULL
+                 : sk_SSL_CIPHER_value(ctx->provider_ciphersuites, i);
 }
 
 const SSL_CIPHER *ssl_provider_ciphersuite_by_name(const SSL_CTX *ctx,
     const char *name)
 {
+    SSL_CIPHER key = { 0 };
     int i;
 
-    if (ctx == NULL || name == NULL)
+    if (ctx == NULL || name == NULL
+        || ctx->provider_ciphersuites_by_name == NULL)
         return NULL;
 
-    for (i = 0; i < sk_SSL_CIPHER_num(ctx->provider_ciphersuites); i++) {
-        const SSL_CIPHER *suite = sk_SSL_CIPHER_value(ctx->provider_ciphersuites, i);
-
-        if (OPENSSL_strcasecmp(suite->stdname, name) == 0)
-            return suite;
-    }
-    return NULL;
+    key.name = name;
+    i = sk_SSL_CIPHER_find(ctx->provider_ciphersuites_by_name, &key);
+    return i < 0 ? NULL
+                 : sk_SSL_CIPHER_value(ctx->provider_ciphersuites_by_name, i);
 }
 
-static int tls_ciphersuite_has_required_tag(const EVP_CIPHER *cipher)
-{
-    EVP_CIPHER_CTX *cctx = EVP_CIPHER_CTX_new();
-    int taglen = 0;
-
-    /*
-     * EVP_CIPHER has no static accessor for the default AEAD tag length,
-     * so query it from an initialized context.
-     */
-    if (cctx != NULL
-        && EVP_EncryptInit_ex2(cctx, cipher, NULL, NULL, NULL) > 0)
-        taglen = EVP_CIPHER_CTX_get_tag_length(cctx);
-    EVP_CIPHER_CTX_free(cctx);
-    return taglen == EVP_GCM_TLS_TAG_LEN;
-}
-
+#ifndef OPENSSL_NO_TLS1_3
 static OSSL_CALLBACK add_provider_ciphersuite;
 static int add_provider_ciphersuite(const OSSL_PARAM params[], void *data)
 {
@@ -320,7 +311,8 @@ static int add_provider_ciphersuite(const OSSL_PARAM params[], void *data)
     SSL_CTX *ctx = pcd->ctx;
     const OSSL_PARAM *p;
     const char *name = NULL, *aead_name = NULL, *digest_name = NULL;
-    unsigned int codepoint = 0, secbits = 0;
+    const char *reason = "invalid descriptor";
+    unsigned int codepoint = 0, secbits = 0, taglen = 0;
     uint32_t id;
     int keylen, digest_idx;
     SSL_CIPHER *suite = NULL;
@@ -335,33 +327,51 @@ static int add_provider_ciphersuite(const OSSL_PARAM params[], void *data)
         || !tls_ciphersuite_get_string_param(params,
             OSSL_CAPABILITY_TLS_CIPHERSUITE_AEAD, &aead_name)
         || !tls_ciphersuite_get_string_param(params,
-            OSSL_CAPABILITY_TLS_CIPHERSUITE_DIGEST, &digest_name))
+            OSSL_CAPABILITY_TLS_CIPHERSUITE_DIGEST, &digest_name)) {
+        reason = "invalid name or algorithm parameter";
         goto invalid;
+    }
 
     p = OSSL_PARAM_locate_const(params,
         OSSL_CAPABILITY_TLS_CIPHERSUITE_CODE_POINT);
     if (p == NULL || !OSSL_PARAM_get_uint(p, &codepoint)
         || codepoint == 0 || codepoint > UINT16_MAX
-        || ossl_is_grease_value((uint16_t)codepoint))
+        || ossl_is_grease_value((uint16_t)codepoint)) {
+        reason = "invalid code point";
         goto invalid;
+    }
     id = SSL3_CK_CIPHERSUITE_FLAG | codepoint;
 
     p = OSSL_PARAM_locate_const(params,
         OSSL_CAPABILITY_TLS_CIPHERSUITE_SECURITY_BITS);
     if (p == NULL || !OSSL_PARAM_get_uint(p, &secbits)
-        || secbits < 128 || secbits > INT_MAX)
+        || secbits < 128 || secbits > INT_MAX) {
+        reason = "invalid security bits";
         goto invalid;
+    }
+
+    p = OSSL_PARAM_locate_const(params,
+        OSSL_CAPABILITY_TLS_CIPHERSUITE_TAG_LENGTH);
+    if (p == NULL || !OSSL_PARAM_get_uint(p, &taglen)
+        || taglen != EVP_GCM_TLS_TAG_LEN) {
+        reason = "invalid tag length";
+        goto invalid;
+    }
 
     if (ssl3_get_cipher_by_id(id) != NULL
         || ssl3_get_tls13_cipher_by_std_name(name) != NULL
-        || ssl3_get_cipher_by_std_name(name) != NULL
-        || ssl_provider_ciphersuite_by_id(ctx, id) != NULL
-        || ssl_provider_ciphersuite_by_name(ctx, name) != NULL)
+        || ssl3_get_cipher_by_std_name(name) != NULL) {
+        reason = "name or code point collision";
         goto invalid;
+    }
 
+    (void)ERR_set_mark();
     cipher = EVP_CIPHER_fetch(ctx->libctx, aead_name, ctx->propq);
-    if (cipher == NULL)
-        goto invalid;
+    if (cipher == NULL) {
+        ERR_pop_to_mark();
+        goto unavailable;
+    }
+    ERR_pop_to_mark();
     keylen = EVP_CIPHER_get_key_length(cipher);
     if ((EVP_CIPHER_get_flags(cipher) & EVP_CIPH_FLAG_AEAD_CIPHER) == 0
         || EVP_CIPHER_get_mode(cipher) == EVP_CIPH_CCM_MODE
@@ -369,19 +379,26 @@ static int add_provider_ciphersuite(const OSSL_PARAM params[], void *data)
         || keylen <= 0
         || keylen > EVP_MAX_KEY_LENGTH
         || EVP_CIPHER_get_iv_length(cipher) != 12
-        || secbits > (unsigned int)keylen * 8U
-        || !tls_ciphersuite_has_required_tag(cipher))
+        || secbits > (unsigned int)keylen * 8U) {
+        reason = "unsupported AEAD profile";
         goto invalid;
+    }
 
+    (void)ERR_set_mark();
     digest = EVP_MD_fetch(ctx->libctx, digest_name, ctx->propq);
-    if (digest == NULL)
-        goto invalid;
+    if (digest == NULL) {
+        ERR_pop_to_mark();
+        goto unavailable;
+    }
+    ERR_pop_to_mark();
     if (EVP_MD_is_a(digest, OSSL_DIGEST_NAME_SHA2_256))
         digest_idx = SSL_HANDSHAKE_MAC_SHA256;
     else if (EVP_MD_is_a(digest, OSSL_DIGEST_NAME_SHA2_384))
         digest_idx = SSL_HANDSHAKE_MAC_SHA384;
-    else
+    else {
+        reason = "unsupported digest";
         goto invalid;
+    }
 
     suite = OPENSSL_zalloc(sizeof(*suite));
     if (suite == NULL)
@@ -395,8 +412,7 @@ static int add_provider_ciphersuite(const OSSL_PARAM params[], void *data)
     suite->name = OPENSSL_strdup(name);
     if (suite->name == NULL)
         goto err;
-    /* The provider supplies one name, so both fields share this allocation. */
-    suite->stdname = suite->name;
+    suite->stdname = NULL;
     suite->valid = 1;
     suite->id = id;
     suite->algorithm_mkey = SSL_kANY;
@@ -415,7 +431,6 @@ static int add_provider_ciphersuite(const OSSL_PARAM params[], void *data)
     cipher = NULL;
     suite->provider_digest = digest;
     digest = NULL;
-
     if (!sk_SSL_CIPHER_push(ctx->provider_ciphersuites, suite))
         goto crypto_err;
     suite = NULL;
@@ -423,15 +438,28 @@ static int add_provider_ciphersuite(const OSSL_PARAM params[], void *data)
 
 crypto_err:
     ERR_raise(ERR_LIB_SSL, ERR_R_CRYPTO_LIB);
-    goto err;
-invalid:
-    ERR_raise(ERR_LIB_SSL, SSL_R_BAD_CIPHER);
+    /* fall through */
 err:
     pcd->callback_failed = 1;
     EVP_CIPHER_free(cipher);
     EVP_MD_free(digest);
     ssl_cipher_free(suite);
     return 0;
+invalid:
+    ERR_raise_data(ERR_LIB_SSL, SSL_R_BAD_CIPHER,
+        "provider=%s ciphersuite=%s reason=%s",
+        OSSL_PROVIDER_get0_name(pcd->provider),
+        name == NULL ? "<unnamed>" : name, reason);
+    goto err;
+unavailable:
+    OSSL_TRACE2(TLS_CIPHER,
+        "Ignoring unavailable TLS-CIPHERSUITE from provider %s: %s\n",
+        OSSL_PROVIDER_get0_name(pcd->provider),
+        name == NULL ? "<unnamed>" : name);
+    EVP_CIPHER_free(cipher);
+    EVP_MD_free(digest);
+    ssl_cipher_free(suite);
+    return 1;
 }
 
 static int discover_provider_ciphersuites(OSSL_PROVIDER *provider, void *vctx)
@@ -441,22 +469,86 @@ static int discover_provider_ciphersuites(OSSL_PROVIDER *provider, void *vctx)
 
     memset(&pcd, 0, sizeof(pcd));
     pcd.ctx = vctx;
+    pcd.provider = provider;
     ret = OSSL_PROVIDER_get_capabilities(provider, "TLS-CIPHERSUITE",
         add_provider_ciphersuite, &pcd);
 
-    if (pcd.callback_failed || (pcd.callbacks_seen != 0 && ret == 0))
+    if (pcd.callback_failed)
         return 0;
+    if (pcd.callbacks_seen != 0 && ret == 0) {
+        ERR_raise_data(ERR_LIB_SSL, SSL_R_BAD_CIPHER,
+            "provider=%s aborted TLS-CIPHERSUITE enumeration",
+            OSSL_PROVIDER_get0_name(provider));
+        return 0;
+    }
     return 1;
 }
 
+static int index_provider_ciphersuites(SSL_CTX *ctx)
+{
+    STACK_OF(SSL_CIPHER) *by_name = NULL;
+    const SSL_CIPHER *previous, *current;
+    int i, count = sk_SSL_CIPHER_num(ctx->provider_ciphersuites);
+
+    sk_SSL_CIPHER_sort(ctx->provider_ciphersuites);
+    for (i = 1; i < count; i++) {
+        previous = sk_SSL_CIPHER_value(ctx->provider_ciphersuites, i - 1);
+        current = sk_SSL_CIPHER_value(ctx->provider_ciphersuites, i);
+        if (previous->id == current->id) {
+            ERR_raise_data(ERR_LIB_SSL, SSL_R_BAD_CIPHER,
+                "TLS-CIPHERSUITE code point collision: 0x%04x (%s, %s)",
+                (unsigned int)(current->id & 0xffff),
+                previous->name, current->name);
+            return 0;
+        }
+    }
+
+    if (count == 0)
+        return 1;
+
+    by_name = sk_SSL_CIPHER_dup(ctx->provider_ciphersuites);
+    if (by_name == NULL) {
+        ERR_raise(ERR_LIB_SSL, ERR_R_CRYPTO_LIB);
+        return 0;
+    }
+    (void)sk_SSL_CIPHER_set_cmp_func(by_name,
+        ssl_provider_ciphersuite_name_cmp);
+    sk_SSL_CIPHER_sort(by_name);
+    for (i = 1; i < count; i++) {
+        previous = sk_SSL_CIPHER_value(by_name, i - 1);
+        current = sk_SSL_CIPHER_value(by_name, i);
+        if (OPENSSL_strcasecmp(previous->name, current->name) == 0) {
+            ERR_raise_data(ERR_LIB_SSL, SSL_R_BAD_CIPHER,
+                "TLS-CIPHERSUITE name collision: %s", current->name);
+            sk_SSL_CIPHER_free(by_name);
+            return 0;
+        }
+    }
+
+    ctx->provider_ciphersuites_by_name = by_name;
+    return 1;
+}
+#endif
+
 int ssl_load_provider_ciphersuites(SSL_CTX *ctx)
 {
-    ctx->provider_ciphersuites = sk_SSL_CIPHER_new_null();
+    ctx->provider_ciphersuites = sk_SSL_CIPHER_new(ssl_cipher_ptr_id_cmp);
     if (ctx->provider_ciphersuites == NULL)
         return 0;
 
-    return OSSL_PROVIDER_do_all(ctx->libctx,
-        discover_provider_ciphersuites, ctx);
+#ifdef OPENSSL_NO_TLS1_3
+    return 1;
+#else
+    if (SSL_CTX_IS_DTLS(ctx) || IS_QUIC_METHOD(ctx->method)
+        || (ctx->method->version != TLS_ANY_VERSION
+            && ctx->method->version < TLS1_3_VERSION))
+        return 1;
+
+    if (!OSSL_PROVIDER_do_all(ctx->libctx,
+            discover_provider_ciphersuites, ctx))
+        return 0;
+    return index_provider_ciphersuites(ctx);
+#endif
 }
 
 #define TLS_GROUP_LIST_MALLOC_BLOCK_SIZE 10
