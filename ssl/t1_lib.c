@@ -251,17 +251,24 @@ static int tls_ciphersuite_name_is_valid(const char *name)
 }
 
 static int tls_ciphersuite_get_string_param(const OSSL_PARAM params[],
-    const char *key, const char **value)
+    const char *key, char *value, size_t value_size)
 {
     const OSSL_PARAM *p = OSSL_PARAM_locate_const(params, key);
     const char *source;
+    size_t len;
 
-    *value = NULL;
-    if (p == NULL || !OSSL_PARAM_get_utf8_string_ptr(p, &source)
-        || source == NULL || *source == '\0')
+    if (p == NULL || p->data_type != OSSL_PARAM_UTF8_STRING
+        || p->data == NULL || p->data_size == 0 || value_size == 0)
         return 0;
 
-    *value = source;
+    source = p->data;
+    len = OPENSSL_strnlen(source, p->data_size);
+    if (len == 0 || len >= value_size
+        || (len < p->data_size && len + 1 != p->data_size))
+        return 0;
+
+    memcpy(value, source, len);
+    value[len] = '\0';
     return 1;
 }
 
@@ -310,7 +317,7 @@ static int add_provider_ciphersuite(const OSSL_PARAM params[], void *data)
     struct provider_ciphersuite_data_st *pcd = data;
     SSL_CTX *ctx = pcd->ctx;
     const OSSL_PARAM *p;
-    const char *name = NULL, *aead_name = NULL, *digest_name = NULL;
+    char name[256] = { 0 }, aead_name[256], digest_name[256];
     const char *reason = "invalid descriptor";
     unsigned int codepoint = 0, secbits = 0, taglen = 0;
     uint32_t id;
@@ -322,12 +329,14 @@ static int add_provider_ciphersuite(const OSSL_PARAM params[], void *data)
     pcd->callbacks_seen++;
 
     if (!tls_ciphersuite_get_string_param(params,
-            OSSL_CAPABILITY_TLS_CIPHERSUITE_NAME, &name)
+            OSSL_CAPABILITY_TLS_CIPHERSUITE_NAME, name, sizeof(name))
         || !tls_ciphersuite_name_is_valid(name)
         || !tls_ciphersuite_get_string_param(params,
-            OSSL_CAPABILITY_TLS_CIPHERSUITE_AEAD, &aead_name)
+            OSSL_CAPABILITY_TLS_CIPHERSUITE_AEAD, aead_name,
+            sizeof(aead_name))
         || !tls_ciphersuite_get_string_param(params,
-            OSSL_CAPABILITY_TLS_CIPHERSUITE_DIGEST, &digest_name)) {
+            OSSL_CAPABILITY_TLS_CIPHERSUITE_DIGEST, digest_name,
+            sizeof(digest_name))) {
         reason = "invalid name or algorithm parameter";
         goto invalid;
     }
@@ -358,9 +367,7 @@ static int add_provider_ciphersuite(const OSSL_PARAM params[], void *data)
         goto invalid;
     }
 
-    if (ssl3_get_cipher_by_id(id) != NULL
-        || ssl3_get_tls13_cipher_by_std_name(name) != NULL
-        || ssl3_get_cipher_by_std_name(name) != NULL) {
+    if (ssl3_get_cipher_by_id(id) != NULL || ssl3_has_cipher_name(name)) {
         reason = "name or code point collision";
         goto invalid;
     }
@@ -449,13 +456,13 @@ invalid:
     ERR_raise_data(ERR_LIB_SSL, SSL_R_BAD_CIPHER,
         "provider=%s ciphersuite=%s reason=%s",
         OSSL_PROVIDER_get0_name(pcd->provider),
-        name == NULL ? "<unnamed>" : name, reason);
+        name[0] == '\0' ? "<unnamed>" : name, reason);
     goto err;
 unavailable:
     OSSL_TRACE2(TLS_CIPHER,
         "Ignoring unavailable TLS-CIPHERSUITE from provider %s: %s\n",
         OSSL_PROVIDER_get0_name(pcd->provider),
-        name == NULL ? "<unnamed>" : name);
+        name[0] == '\0' ? "<unnamed>" : name);
     EVP_CIPHER_free(cipher);
     EVP_MD_free(digest);
     ssl_cipher_free(suite);

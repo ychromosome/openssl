@@ -715,6 +715,17 @@ const EVP_MD *ssl_md(SSL_CTX *ctx, int idx)
     return ctx->ssl_digest_methods[idx];
 }
 
+int ssl_cipher_has_same_digest(const SSL_CIPHER *a, const SSL_CIPHER *b)
+{
+    uint32_t a_digest, b_digest;
+
+    if (a == NULL || b == NULL)
+        return 0;
+    a_digest = a->algorithm2 & SSL_HANDSHAKE_MAC_MASK;
+    b_digest = b->algorithm2 & SSL_HANDSHAKE_MAC_MASK;
+    return a_digest != 0 && a_digest == b_digest;
+}
+
 const EVP_MD *ssl_handshake_md(SSL_CONNECTION *s)
 {
     if (s->s3.tmp.new_cipher != NULL
@@ -2251,12 +2262,14 @@ const SSL_CIPHER *ssl_get_cipher_by_char(SSL_CONNECTION *s,
 
 const SSL_CIPHER *SSL_CIPHER_find(SSL *ssl, const unsigned char *ptr)
 {
-    SSL_CONNECTION *s = SSL_CONNECTION_FROM_SSL(ssl);
-    const SSL_CIPHER *cipher = ssl->method->get_cipher_by_char(ptr);
+    const SSL_CIPHER *cipher;
 
+    if (ssl == NULL)
+        return NULL;
+    cipher = ssl->method->get_cipher_by_char(ptr);
     if (cipher != NULL)
         return cipher;
-    return ssl_provider_ciphersuite_by_char(s, ptr);
+    return ssl_provider_ciphersuite_by_char(SSL_CONNECTION_FROM_SSL(ssl), ptr);
 }
 
 int SSL_CIPHER_get_cipher_nid(const SSL_CIPHER *c)

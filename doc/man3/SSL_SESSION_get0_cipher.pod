@@ -28,6 +28,10 @@ session based PSK (see L<SSL_CTX_set_psk_use_session_callback(3)>).
 
 After assignment of a provider-defined ciphersuite, B<s> is permanently
 non-resumable, non-cacheable and non-serialisable and cannot issue tickets.
+It remains eligible for explicit use through the TLS 1.3 external-PSK
+callbacks, including for 0-RTT. Such use does not lift any of these
+restrictions. A successful d2i_SSL_SESSION() call replaces the logical session
+with the decoded built-in session state.
 
 =head1 RETURN VALUES
 
