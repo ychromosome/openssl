@@ -402,7 +402,11 @@ static const OSSL_PARAM xor_sig_12_params[] = {
 
 typedef struct {
     OSSL_LIB_CTX *libctx;
+    unsigned int tls_alg_ids[4];
+    size_t tls_alg_id_count;
 } PROV_XOR_CTX;
+
+static void release_tls_alg_ids(PROV_XOR_CTX *provctx);
 
 #define PROV_XOR_LIBCTX_OF(provctx) (((PROV_XOR_CTX *)provctx)->libctx)
 
@@ -982,6 +986,19 @@ static int tls_prov_get_ciphersuites(OSSL_CALLBACK *cb, void *arg)
     char composed_name[] = "TLS_TEST_COMPOSED_AES_128_GCM_SHA256";
     char invalid_name[] = "TLS:TEST:INVALID";
     char builtin_name[] = "TLS_AES_128_GCM_SHA256";
+    char builtin_name_lower[] = "tls_aes_128_gcm_sha256";
+    char legacy_name[] = "ECDHE-RSA-AES128-GCM-SHA256";
+    char legacy_name_lower[] = "ecdhe-rsa-aes128-gcm-sha256";
+    char legacy_stdname[] = "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256";
+    char legacy_stdname_lower[] = "tls_ecdhe_rsa_with_aes_128_gcm_sha256";
+    char space_name[] = "TLS TEST";
+    char bang_name[] = "!";
+    char tilde_name[] = "~";
+    char delete_name[] = { 'T', 'L', 'S', 0x7f, '\0' };
+    char nonascii_name[] = { 'T', 'L', 'S', (char)0x80, '\0' };
+    char embedded_nul_name[] = { 'T', 'L', 'S', '\0', 'X' };
+    char max_name[256];
+    char overlong_name[257];
     char composed_aead[] = "AES-128-GCM";
     char composed_digest[] = "SHA2-256";
     char non_aead[] = "AES-128-ECB";
@@ -1006,6 +1023,11 @@ static int tls_prov_get_ciphersuites(OSSL_CALLBACK *cb, void *arg)
         return 1;
 
     memcpy(params, tls_ciphersuite_params, sizeof(tls_ciphersuite_params));
+
+    memset(max_name, 'A', sizeof(max_name));
+    max_name[sizeof(max_name) - 1] = '\0';
+    memset(overlong_name, 'A', sizeof(overlong_name));
+    overlong_name[sizeof(overlong_name) - 1] = '\0';
 
     if (strcmp(tls_ciphersuite_mode, "valid") == 0)
         return cb(params, arg);
@@ -1065,14 +1087,66 @@ static int tls_prov_get_ciphersuites(OSSL_CALLBACK *cb, void *arg)
     } else if (strcmp(tls_ciphersuite_mode, "builtin-name") == 0) {
         params[TLS_CIPHERSUITE_NAME_PARAM].data = builtin_name;
         params[TLS_CIPHERSUITE_NAME_PARAM].data_size = sizeof(builtin_name);
+    } else if (strcmp(tls_ciphersuite_mode, "builtin-name-lower") == 0) {
+        params[TLS_CIPHERSUITE_NAME_PARAM].data = builtin_name_lower;
+        params[TLS_CIPHERSUITE_NAME_PARAM].data_size
+            = sizeof(builtin_name_lower);
+    } else if (strcmp(tls_ciphersuite_mode, "legacy-name") == 0) {
+        params[TLS_CIPHERSUITE_NAME_PARAM].data = legacy_name;
+        params[TLS_CIPHERSUITE_NAME_PARAM].data_size = sizeof(legacy_name);
+    } else if (strcmp(tls_ciphersuite_mode, "legacy-name-lower") == 0) {
+        params[TLS_CIPHERSUITE_NAME_PARAM].data = legacy_name_lower;
+        params[TLS_CIPHERSUITE_NAME_PARAM].data_size
+            = sizeof(legacy_name_lower);
+    } else if (strcmp(tls_ciphersuite_mode, "legacy-stdname") == 0) {
+        params[TLS_CIPHERSUITE_NAME_PARAM].data = legacy_stdname;
+        params[TLS_CIPHERSUITE_NAME_PARAM].data_size = sizeof(legacy_stdname);
+    } else if (strcmp(tls_ciphersuite_mode, "legacy-stdname-lower") == 0) {
+        params[TLS_CIPHERSUITE_NAME_PARAM].data = legacy_stdname_lower;
+        params[TLS_CIPHERSUITE_NAME_PARAM].data_size
+            = sizeof(legacy_stdname_lower);
+    } else if (strcmp(tls_ciphersuite_mode, "space-name") == 0) {
+        params[TLS_CIPHERSUITE_NAME_PARAM].data = space_name;
+        params[TLS_CIPHERSUITE_NAME_PARAM].data_size = sizeof(space_name);
+    } else if (strcmp(tls_ciphersuite_mode, "bang-name") == 0) {
+        params[TLS_CIPHERSUITE_NAME_PARAM].data = bang_name;
+        params[TLS_CIPHERSUITE_NAME_PARAM].data_size = sizeof(bang_name);
+    } else if (strcmp(tls_ciphersuite_mode, "tilde-name") == 0) {
+        params[TLS_CIPHERSUITE_NAME_PARAM].data = tilde_name;
+        params[TLS_CIPHERSUITE_NAME_PARAM].data_size = sizeof(tilde_name);
+    } else if (strcmp(tls_ciphersuite_mode, "delete-name") == 0) {
+        params[TLS_CIPHERSUITE_NAME_PARAM].data = delete_name;
+        params[TLS_CIPHERSUITE_NAME_PARAM].data_size = sizeof(delete_name);
+    } else if (strcmp(tls_ciphersuite_mode, "nonascii-name") == 0) {
+        params[TLS_CIPHERSUITE_NAME_PARAM].data = nonascii_name;
+        params[TLS_CIPHERSUITE_NAME_PARAM].data_size = sizeof(nonascii_name);
+    } else if (strcmp(tls_ciphersuite_mode, "unterminated-name") == 0) {
+        params[TLS_CIPHERSUITE_NAME_PARAM].data_size
+            = strlen(tls_ciphersuite_name);
+    } else if (strcmp(tls_ciphersuite_mode, "embedded-nul-name") == 0) {
+        params[TLS_CIPHERSUITE_NAME_PARAM].data = embedded_nul_name;
+        params[TLS_CIPHERSUITE_NAME_PARAM].data_size
+            = sizeof(embedded_nul_name);
+    } else if (strcmp(tls_ciphersuite_mode, "max-name") == 0) {
+        params[TLS_CIPHERSUITE_NAME_PARAM].data = max_name;
+        params[TLS_CIPHERSUITE_NAME_PARAM].data_size = sizeof(max_name);
+    } else if (strcmp(tls_ciphersuite_mode, "overlong-name") == 0) {
+        params[TLS_CIPHERSUITE_NAME_PARAM].data = overlong_name;
+        params[TLS_CIPHERSUITE_NAME_PARAM].data_size = sizeof(overlong_name);
+    } else if (strcmp(tls_ciphersuite_mode,
+                   "unterminated-algorithm-names")
+        == 0) {
+        params[TLS_CIPHERSUITE_AEAD_PARAM].data_size
+            = strlen(tls_ciphersuite_aead);
+        params[TLS_CIPHERSUITE_DIGEST_PARAM].data_size
+            = strlen(tls_ciphersuite_digest);
     } else if (strcmp(tls_ciphersuite_mode, "zero-codepoint") == 0
-        || strcmp(tls_ciphersuite_mode, "registered-like-codepoint") == 0
+        || strcmp(tls_ciphersuite_mode, "non-private-codepoint") == 0
         || strcmp(tls_ciphersuite_mode, "grease-codepoint") == 0
         || strcmp(tls_ciphersuite_mode, "builtin-codepoint") == 0) {
         if (strcmp(tls_ciphersuite_mode, "zero-codepoint") == 0)
             bad_codepoint = 0;
-        else if (strcmp(tls_ciphersuite_mode,
-                     "registered-like-codepoint")
+        else if (strcmp(tls_ciphersuite_mode, "non-private-codepoint")
             == 0)
             bad_codepoint = 0xfea0;
         else if (strcmp(tls_ciphersuite_mode, "grease-codepoint") == 0)
@@ -1153,17 +1227,28 @@ static int tls_prov_get_ciphersuites(OSSL_CALLBACK *cb, void *arg)
 static int tls_prov_get_capabilities(void *provctx, const char *capability,
     OSSL_CALLBACK *cb, void *arg)
 {
+    PROV_XOR_CTX *pctx = provctx;
+    OSSL_PARAM group_params[OSSL_NELEM(xor_group_params)];
+    OSSL_PARAM kemgroup_params[OSSL_NELEM(xor_kemgroup_params)];
+    OSSL_PARAM sig_nohash_params[OSSL_NELEM(xor_sig_nohash_params)];
+    OSSL_PARAM sig_hash_params[OSSL_NELEM(xor_sig_hash_params)];
     int ret = 0;
     int i;
     const char *dummy_base = "dummy";
     const size_t dummy_name_max_size = strlen(dummy_base) + 3;
 
     if (strcmp(capability, "TLS-GROUP") == 0) {
+        memcpy(group_params, xor_group_params, sizeof(group_params));
+        memcpy(kemgroup_params, xor_kemgroup_params,
+            sizeof(kemgroup_params));
+        group_params[3].data = &pctx->tls_alg_ids[0];
+        kemgroup_params[3].data = &pctx->tls_alg_ids[1];
+
         /* Register our 2 groups */
-        OPENSSL_assert(xor_group.group_id >= 65024
-            && xor_group.group_id < 65279 - NUM_DUMMY_GROUPS);
-        ret = cb(xor_group_params, arg);
-        ret &= cb(xor_kemgroup_params, arg);
+        OPENSSL_assert(pctx->tls_alg_ids[0] >= 65024
+            && pctx->tls_alg_ids[0] < 65280 - NUM_DUMMY_GROUPS);
+        ret = cb(group_params, arg);
+        ret &= cb(kemgroup_params, arg);
 
         /*
          * Now register some dummy groups > GROUPLIST_INCREMENT (== 40) as defined
@@ -1175,7 +1260,7 @@ static int tls_prov_get_capabilities(void *provctx, const char *capability,
             OSSL_PARAM dummygroup[OSSL_NELEM(xor_group_params)];
             unsigned int dummygroup_id;
 
-            memcpy(dummygroup, xor_group_params, sizeof(xor_group_params));
+            memcpy(dummygroup, group_params, sizeof(group_params));
 
             /* Give the dummy group a unique name */
             if (dummy_group_names[i] == NULL) {
@@ -1189,15 +1274,21 @@ static int tls_prov_get_capabilities(void *provctx, const char *capability,
             dummygroup[0].data = dummy_group_names[i];
             dummygroup[0].data_size = strlen(dummy_group_names[i]) + 1;
             /* assign unique group IDs also to dummy groups for registration */
-            dummygroup_id = 65279 - NUM_DUMMY_GROUPS + i;
+            dummygroup_id = 65280 - NUM_DUMMY_GROUPS + i;
             dummygroup[3].data = (unsigned char *)&dummygroup_id;
             ret &= cb(dummygroup, arg);
         }
     }
 
     if (strcmp(capability, "TLS-SIGALG") == 0) {
-        ret = cb(xor_sig_nohash_params, arg);
-        ret &= cb(xor_sig_hash_params, arg);
+        memcpy(sig_nohash_params, xor_sig_nohash_params,
+            sizeof(sig_nohash_params));
+        memcpy(sig_hash_params, xor_sig_hash_params,
+            sizeof(sig_hash_params));
+        sig_nohash_params[3].data = &pctx->tls_alg_ids[2];
+        sig_hash_params[4].data = &pctx->tls_alg_ids[3];
+        ret = cb(sig_nohash_params, arg);
+        ret &= cb(sig_hash_params, arg);
         ret &= cb(xor_sig_12_params, arg);
     }
     if (strcmp(capability, "TLS-CIPHERSUITE") == 0)
@@ -1207,7 +1298,7 @@ static int tls_prov_get_capabilities(void *provctx, const char *capability,
 
 static PROV_XOR_CTX *xor_newprovctx(OSSL_LIB_CTX *libctx)
 {
-    PROV_XOR_CTX *prov_ctx = OPENSSL_malloc(sizeof(PROV_XOR_CTX));
+    PROV_XOR_CTX *prov_ctx = OPENSSL_zalloc(sizeof(*prov_ctx));
 
     if (prov_ctx == NULL)
         return NULL;
@@ -3914,6 +4005,7 @@ static void tls_prov_teardown(void *provctx)
     int i;
     PROV_XOR_CTX *pctx = (PROV_XOR_CTX *)provctx;
 
+    release_tls_alg_ids(pctx);
     OSSL_LIB_CTX_free(pctx->libctx);
 
     for (i = 0; i < NUM_DUMMY_GROUPS; i++) {
@@ -3931,35 +4023,65 @@ static const OSSL_DISPATCH tls_prov_dispatch_table[] = {
     OSSL_DISPATCH_END
 };
 
-static unsigned int randomize_tls_alg_id(OSSL_LIB_CTX *libctx)
+#define TLS_TEST_PRIVATE_ID_FIRST 65024U
+#define TLS_TEST_PRIVATE_ID_END 65280U
+#define TLS_TEST_RANDOM_ID_END (TLS_TEST_PRIVATE_ID_END - NUM_DUMMY_GROUPS)
+#define TLS_TEST_RANDOM_ID_COUNT \
+    (TLS_TEST_RANDOM_ID_END - TLS_TEST_PRIVATE_ID_FIRST)
+
+static unsigned int tls_alg_ids_in_use[TLS_TEST_RANDOM_ID_COUNT];
+static size_t tls_alg_ids_in_use_count;
+
+static void release_tls_alg_ids(PROV_XOR_CTX *provctx)
+{
+    size_t i, j;
+
+    if (provctx == NULL)
+        return;
+    for (i = 0; i < provctx->tls_alg_id_count; i++) {
+        for (j = 0; j < tls_alg_ids_in_use_count; j++) {
+            if (tls_alg_ids_in_use[j] == provctx->tls_alg_ids[i]) {
+                tls_alg_ids_in_use[j]
+                    = tls_alg_ids_in_use[--tls_alg_ids_in_use_count];
+                break;
+            }
+        }
+    }
+    provctx->tls_alg_id_count = 0;
+}
+
+static unsigned int randomize_tls_alg_id(PROV_XOR_CTX *provctx)
 {
     /*
      * Randomise the id we're going to use to ensure we don't interoperate
      * with anything but ourselves.
      */
     unsigned int id;
-    static unsigned int mem[10] = { 0 };
-    static int in_mem = 0;
-    int i;
+    size_t i;
 
+    if (provctx->tls_alg_id_count >= OSSL_NELEM(provctx->tls_alg_ids)
+        || tls_alg_ids_in_use_count >= TLS_TEST_RANDOM_ID_COUNT)
+        return 0;
 retry:
-    if (RAND_bytes_ex(libctx, (unsigned char *)&id, sizeof(id), 0) <= 0)
+    if (RAND_bytes_ex(provctx->libctx, (unsigned char *)&id, sizeof(id), 0)
+        <= 0)
         return 0;
     /*
      * Ensure id is within the IANA Reserved for private use range
-     * (65024-65279).
+     * (65024-65279 inclusive).
      * Carve out NUM_DUMMY_GROUPS ids for properly registering those.
      */
-    id %= 65279 - NUM_DUMMY_GROUPS - 65024;
-    id += 65024;
+    id %= TLS_TEST_RANDOM_ID_COUNT;
+    id += TLS_TEST_PRIVATE_ID_FIRST;
 
     /* Ensure we did not already issue this id */
-    for (i = 0; i < in_mem; i++)
-        if (mem[i] == id)
+    for (i = 0; i < tls_alg_ids_in_use_count; i++)
+        if (tls_alg_ids_in_use[i] == id)
             goto retry;
 
     /* Add this id to the list of ids issued by this function */
-    mem[in_mem++] = id;
+    tls_alg_ids_in_use[tls_alg_ids_in_use_count++] = id;
+    provctx->tls_alg_ids[provctx->tls_alg_id_count++] = id;
 
     return id;
 }
@@ -3983,10 +4105,11 @@ int tls_provider_init(const OSSL_CORE_HANDLE *handle,
      * Randomise the group_id and code_points we're going to use to ensure we
      * don't interoperate with anything but ourselves.
      */
-    xor_group.group_id = randomize_tls_alg_id(libctx);
-    xor_kemgroup.group_id = randomize_tls_alg_id(libctx);
-    xor_sigalg.code_point = randomize_tls_alg_id(libctx);
-    xor_sigalg_hash.code_point = randomize_tls_alg_id(libctx);
+    if (randomize_tls_alg_id(xor_prov_ctx) == 0
+        || randomize_tls_alg_id(xor_prov_ctx) == 0
+        || randomize_tls_alg_id(xor_prov_ctx) == 0
+        || randomize_tls_alg_id(xor_prov_ctx) == 0)
+        goto err;
 
     /* Retrieve registration functions */
     for (; in->function_id != 0; in++) {
@@ -4036,6 +4159,7 @@ int tls_provider_init(const OSSL_CORE_HANDLE *handle,
     return 1;
 
 err:
+    release_tls_alg_ids(xor_prov_ctx);
     OPENSSL_free(xor_prov_ctx);
     *provctx = NULL;
     OSSL_LIB_CTX_free(libctx);

@@ -269,6 +269,7 @@ SSL_SESSION *d2i_SSL_SESSION_ex(SSL_SESSION **a, const unsigned char **pp,
     long id;
     size_t tmpl;
     const unsigned char *p = *pp;
+    const SSL_CIPHER *cipher;
     SSL_SESSION_ASN1 *as = NULL;
     SSL_SESSION *ret = NULL;
 
@@ -309,10 +310,10 @@ SSL_SESSION *d2i_SSL_SESSION_ex(SSL_SESSION **a, const unsigned char **pp,
     id = 0x03000000L | ((unsigned long)as->cipher->data[0] << 8L)
         | (unsigned long)as->cipher->data[1];
 
-    ret->cipher_id = id;
-    ret->cipher = ssl3_get_cipher_by_id(id);
-    if (ret->cipher == NULL)
+    cipher = ssl3_get_cipher_by_id(id);
+    if (cipher == NULL || !ssl_session_set_cipher(ret, cipher))
         goto err;
+    ret->cipher_id = id;
 
     if (!ssl_session_memcpy(ret->session_id, &ret->session_id_length,
             as->session_id, SSL3_MAX_SSL_SESSION_ID_LENGTH))
@@ -422,6 +423,10 @@ SSL_SESSION *d2i_SSL_SESSION_ex(SSL_SESSION **a, const unsigned char **pp,
     }
 
     M_ASN1_free_of(as, SSL_SESSION_ASN1);
+
+    /* A successful decode replaces the logical session with a built-in one. */
+    ret->provider_cipher_seen = 0;
+    ret->not_resumable = 0;
 
     if ((a != NULL) && (*a == NULL))
         *a = ret;

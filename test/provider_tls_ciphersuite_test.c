@@ -38,11 +38,26 @@ static const CIPHERSUITE_TEST ciphersuite_tests[] = {
     { "valid-composed", 1, 1 },
     { "valid-unknown-param", 1, 1 },
     { "valid-two", 1, 2 },
-    { "registered-like-codepoint", 1, 1 },
+    { "non-private-codepoint", 1, 1 },
+    { "bang-name", 1, 1 },
+    { "tilde-name", 1, 1 },
+    { "unterminated-name", 1, 1 },
+    { "unterminated-algorithm-names", 1, 1 },
+    { "max-name", 1, 1 },
     { "unavailable-aead", 1, 0 },
     { "unavailable-digest", 1, 0 },
     { "bad-name", 0, 0 },
     { "builtin-name", 0, 0 },
+    { "builtin-name-lower", 0, 0 },
+    { "legacy-name", 0, 0 },
+    { "legacy-name-lower", 0, 0 },
+    { "legacy-stdname", 0, 0 },
+    { "legacy-stdname-lower", 0, 0 },
+    { "space-name", 0, 0 },
+    { "delete-name", 0, 0 },
+    { "nonascii-name", 0, 0 },
+    { "embedded-nul-name", 0, 0 },
+    { "overlong-name", 0, 0 },
     { "zero-codepoint", 0, 0 },
     { "grease-codepoint", 0, 0 },
     { "builtin-codepoint", 0, 0 },
@@ -373,7 +388,7 @@ static int test_ciphersuite_mode(int idx)
         for (i = 0; i < test->expected_count; i++) {
             if (!check_valid_suite(
                     sk_SSL_CIPHER_value(ctx->provider_ciphersuites, i), i,
-                    strcmp(test->mode, "registered-like-codepoint") != 0))
+                    strcmp(test->mode, "non-private-codepoint") != 0))
                 goto end;
         }
         for (i = 0; i < sk_SSL_CIPHER_num(ctx->tls13_ciphersuites); i++) {

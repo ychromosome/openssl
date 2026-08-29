@@ -1775,17 +1775,19 @@ static int set_client_ciphersuite(SSL_CONNECTION *s,
     if (s->hit && (s->session->cipher_id != c->id)) {
         if (SSL_CONNECTION_IS_VERSION13(s)) {
             const EVP_MD *md = ssl_cipher_get_evp_md(sctx, c);
+            const EVP_MD *session_md;
 
             if (!ossl_assert(s->session->cipher != NULL)) {
                 SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_INTERNAL_ERROR);
                 return 0;
             }
+            session_md = ssl_cipher_get_evp_md(sctx, s->session->cipher);
             /*
              * In TLSv1.3 it is valid for the server to select a different
              * ciphersuite as long as the hash is the same.
              */
-            if (md == NULL
-                || md != ssl_cipher_get_evp_md(sctx, s->session->cipher)) {
+            if (md == NULL || session_md == NULL
+                || !ssl_cipher_has_same_digest(c, s->session->cipher)) {
                 SSLfatal(s, SSL_AD_ILLEGAL_PARAMETER,
                     SSL_R_CIPHERSUITE_DIGEST_HAS_CHANGED);
                 return 0;

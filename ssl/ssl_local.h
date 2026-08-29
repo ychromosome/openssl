@@ -2910,6 +2910,8 @@ __owur int ssl_cipher_get_evp_cipher_sn(SSL_CTX *ctx, const SSL_CIPHER *sslc,
     const EVP_CIPHER **enc);
 __owur const EVP_MD *ssl_cipher_get_evp_md(SSL_CTX *ctx,
     const SSL_CIPHER *sslc);
+__owur int ssl_cipher_has_same_digest(const SSL_CIPHER *a,
+    const SSL_CIPHER *b);
 __owur int ssl_cipher_get_evp_md_mac(SSL_CTX *ctx, const SSL_CIPHER *sslc,
     const EVP_MD **md,
     int *mac_pkey_type, size_t *mac_secret_size);
@@ -3004,6 +3006,7 @@ __owur unsigned int ssl_get_max_send_fragment(const SSL_CONNECTION *sc);
 __owur unsigned int ssl_get_split_send_fragment(const SSL_CONNECTION *sc);
 
 __owur const SSL_CIPHER *ssl3_get_cipher_by_id(uint32_t id);
+__owur int ssl3_has_cipher_name(const char *name);
 __owur const SSL_CIPHER *ssl3_get_cipher_by_std_name(const char *stdname);
 __owur const SSL_CIPHER *ssl3_get_tls13_cipher_by_std_name(const char *stdname);
 __owur const SSL_CIPHER *ssl3_get_cipher_by_char(const unsigned char *p);

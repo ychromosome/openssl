@@ -94,10 +94,12 @@ the SSL or SSL_SESSION object is freed.  Therefore, the calling code B<MUST NOT>
 free the return value itself.
 
 The stack returned by SSL_get1_supported_ciphers() should be freed using
-sk_SSL_CIPHER_free().
+sk_SSL_CIPHER_free(). Its elements are borrowed and must not be freed. A
+provider-defined element remains valid only while B<ssl> remains alive.
 
 The stacks returned by SSL_bytes_to_cipher_list() should be freed using
-sk_SSL_CIPHER_free().
+sk_SSL_CIPHER_free(). Their elements are borrowed and must not be freed. A
+provider-defined element remains valid only while B<s> remains alive.
 
 =head1 RETURN VALUES
 

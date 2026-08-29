@@ -1536,7 +1536,8 @@ int tls_parse_ctos_psk(SSL_CONNECTION *s, PACKET *pkt, unsigned int context,
             SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_INTERNAL_ERROR);
             goto err;
         }
-        if (!EVP_MD_is_a(md, EVP_MD_get0_name(ssl_cipher_get_evp_md(sctx, s->s3.tmp.new_cipher)))) {
+        if (!ssl_cipher_has_same_digest(sess->cipher,
+                s->s3.tmp.new_cipher)) {
             /* The ciphersuite is not compatible with this session. */
             SSL_SESSION_free(sess);
             sess = NULL;
