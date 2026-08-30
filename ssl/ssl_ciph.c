@@ -164,14 +164,65 @@ void ssl_cipher_free(const SSL_CIPHER *cipher)
     OPENSSL_free(mutable_cipher);
 }
 
+static int ssl_provider_ciphersuite_equivalent(const SSL_CIPHER *a,
+    const SSL_CIPHER *b)
+{
+    if (a == b)
+        return 1;
+    if (a == NULL || b == NULL
+        || a->origin != SSL_CIPHER_ORIGIN_PROVIDER
+        || b->origin != SSL_CIPHER_ORIGIN_PROVIDER
+        || a->id != b->id
+        || OPENSSL_strcasecmp(a->name, b->name) != 0
+        || a->algorithm_mkey != b->algorithm_mkey
+        || a->algorithm_auth != b->algorithm_auth
+        || a->algorithm_enc != b->algorithm_enc
+        || a->algorithm_mac != b->algorithm_mac
+        || a->min_tls != b->min_tls || a->max_tls != b->max_tls
+        || a->min_dtls != b->min_dtls || a->max_dtls != b->max_dtls
+        || a->algo_strength != b->algo_strength
+        || a->algorithm2 != b->algorithm2
+        || a->strength_bits != b->strength_bits
+        || a->alg_bits != b->alg_bits)
+        return 0;
+
+    return a->provider_cipher != NULL && a->provider_digest != NULL
+        && a->provider_cipher == b->provider_cipher
+        && a->provider_digest == b->provider_digest;
+}
+
 const SSL_CIPHER *ssl_cipher_canon(const SSL_CONNECTION *s,
     const SSL_CIPHER *cipher)
 {
+    const SSL_CIPHER *canonical;
+
     if (cipher == NULL || cipher->origin != SSL_CIPHER_ORIGIN_PROVIDER)
         return cipher;
     if (s == NULL)
         return NULL;
-    return ssl_provider_ciphersuite_by_id(s->session_ctx, cipher->id);
+    canonical = ssl_provider_ciphersuite_by_id(s->session_ctx, cipher->id);
+    if (!ssl_provider_ciphersuite_equivalent(canonical, cipher))
+        return NULL;
+    return canonical;
+}
+
+const SSL_CIPHER *ssl_cipher_canon_enabled(const SSL_CONNECTION *s,
+    const SSL_CIPHER *cipher)
+{
+    const SSL_CIPHER *canonical = ssl_cipher_canon(s, cipher);
+    SSL_CTX *ctx;
+
+    if (canonical == NULL || canonical->origin != SSL_CIPHER_ORIGIN_PROVIDER)
+        return canonical;
+    ctx = SSL_CONNECTION_GET_CTX(s);
+    if (ctx != s->session_ctx
+        && !ssl_provider_ciphersuite_equivalent(canonical,
+            ssl_provider_ciphersuite_by_id(ctx, canonical->id)))
+        return NULL;
+    if (s->tls13_ciphersuites == NULL
+        || ssl_cipher_stack_find(s->tls13_ciphersuites, canonical) < 0)
+        return NULL;
+    return canonical;
 }
 
 int ssl_cipher_stack_find(STACK_OF(SSL_CIPHER) *sk,
@@ -185,7 +236,8 @@ int ssl_cipher_stack_find(STACK_OF(SSL_CIPHER) *sk,
     for (i = 0; i < sk_SSL_CIPHER_num(sk); i++) {
         const SSL_CIPHER *candidate = sk_SSL_CIPHER_value(sk, i);
 
-        if (candidate->id == cipher->id)
+        if (candidate->id == cipher->id
+            && ssl_provider_ciphersuite_equivalent(candidate, cipher))
             return i;
     }
     return -1;
@@ -216,7 +268,7 @@ static const SSL_CIPHER *ssl_provider_ciphersuite_by_char(
     if (s == NULL)
         return NULL;
 
-    if (IS_QUIC(SSL_CONNECTION_GET_USER_SSL(s)) || SSL_CONNECTION_IS_DTLS(s))
+    if (SSL_IS_QUIC_HANDSHAKE(s) || SSL_CONNECTION_IS_DTLS(s))
         return NULL;
 
     id = SSL3_CK_CIPHERSUITE_FLAG | ((uint32_t)ptr[0] << 8L)
@@ -2504,7 +2556,9 @@ int ssl_cipher_list_to_bytes(SSL_CONNECTION *s, STACK_OF(SSL_CIPHER) *sk,
     for (i = 0; i < sk_SSL_CIPHER_num(sk) && totlen < maxlen; i++) {
         const SSL_CIPHER *c;
 
-        c = sk_SSL_CIPHER_value(sk, i);
+        c = ssl_cipher_canon_enabled(s, sk_SSL_CIPHER_value(sk, i));
+        if (c == NULL)
+            continue;
         /* Skip disabled ciphers */
         if (ssl_cipher_disabled(s, c, SSL_SECOP_CIPHER_SUPPORTED))
             continue;

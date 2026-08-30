@@ -601,20 +601,24 @@ one terminating NUL; embedded NULs and trailing bytes are rejected.
 
 A nonzero 16-bit TLS value that is not a GREASE value and does not collide
 with a built-in or previously discovered ciphersuite. Libssl does not check
-IANA allocation status. A non-private deployment must use a code point
-assigned for the advertised suite.
+IANA allocation status. Use a Private Use value unless the advertised suite
+has an assigned code point.
 
 =item "tls-ciphersuite-aead-name" (B<OSSL_CAPABILITY_TLS_CIPHERSUITE_AEAD>) <UTF8 string>
 
-An AEAD fetch name. The cipher must be non-CCM and have a fixed positive key
-length no greater than B<EVP_MAX_KEY_LENGTH>, a 12-byte IV and a one-byte
-block size. It must support the TLS 1.3 record operations used by libssl:
+An AEAD fetch name of 1 to 255 bytes. The cipher must be non-CCM and report a
+positive key length no greater than B<EVP_MAX_KEY_LENGTH>, a 12-byte IV and a
+one-byte block size. Libssl derives and supplies the reported key length;
+discovery does not prove that the cipher rejects other lengths. AES-128-GCM
+must report 16 bytes. AES-256-GCM and ChaCha20-Poly1305 must report 32 bytes.
+The cipher must support the TLS 1.3 record operations used by libssl:
 setting the IV length and authentication tag, obtaining the authentication
 tag, AAD updates, and in-place encryption and decryption.
 
 =item "tls-ciphersuite-digest-name" (B<OSSL_CAPABILITY_TLS_CIPHERSUITE_DIGEST>) <UTF8 string>
 
-A TLS 1.3 transcript digest fetch name: SHA2-256 or SHA2-384.
+A TLS 1.3 transcript digest fetch name of 1 to 255 bytes: SHA2-256 with a
+32-byte output or SHA2-384 with a 48-byte output.
 
 =item "tls-ciphersuite-security-bits" (B<OSSL_CAPABILITY_TLS_CIPHERSUITE_SECURITY_BITS>) <unsigned integer>
 
@@ -623,6 +627,8 @@ At least 128 and no greater than the AEAD key size in bits.
 =item "tls-ciphersuite-tag-length" (B<OSSL_CAPABILITY_TLS_CIPHERSUITE_TAG_LENGTH>) <unsigned integer>
 
 The record authentication tag length. It must be 16.
+
+Unsigned integer parameters must use between 1 and 8 data bytes.
 
 =back
 
@@ -639,16 +645,26 @@ registry failures also abort context creation.
 Provider-defined ciphersuites are not added to the default ciphersuite list and
 must be selected by name. Their code points require deployment coordination.
 They are restricted to TLS 1.3 and are not available for DTLS or QUIC.
+DTLS 1.3 record-number encryption and QUIC header protection require a
+companion algorithm that this capability does not declare.
 They have no built-in cipher-family classification, so family-specific
-preferences and kTLS recognition do not apply.
+preferences do not apply. Provider-defined ciphersuites do not use kTLS.
 Sessions that have used a provider-defined ciphersuite are not resumable,
 cacheable or serialisable and do not produce session tickets. An application
-may supply a session with such a suite through the TLS 1.3 external-PSK
-callbacks, including for 0-RTT. This does not make that session eligible for
+may supply a session with such a suite through the stream TLS 1.3 external-PSK
+callbacks, including for 0-RTT. DTLS and QUIC reject such sessions. This does
+not make that session eligible for
 ordinary resumption, caching, serialisation or tickets.
 
-Discovery validates metadata only. It does not execute record operations and
-does not enforce provider-specific record usage limits.
+This capability supports the existing stream TLS 1.3 record profile: a
+12-byte IV, 16-byte tag, and SHA-256 or SHA-384 transcript digest. Discovery
+validates metadata only. Successful context creation does not guarantee that
+record setup or the first record operation will succeed.
+
+A provider-defined AEAD must refuse an encryption that would exceed an
+algorithm-specific per-key sending limit. Cipher failure is fatal to the record
+layer. This capability does not expose a threshold for proactive KeyUpdate; an
+AEAD that cannot enforce its limit by refusing encryption is unsupported.
 
 =head3 "TLS-GROUP" Capability
 

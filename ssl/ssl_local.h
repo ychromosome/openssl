@@ -2881,9 +2881,13 @@ __owur int ssl_get_prev_session(SSL_CONNECTION *s, CLIENTHELLO_MSG *hello);
 __owur SSL_SESSION *ssl_session_dup(const SSL_SESSION *src, int ticket);
 __owur int ssl_session_set_cipher(SSL_SESSION *session,
     const SSL_CIPHER *cipher);
+__owur int ssl_session_cipher_is_transport_admissible(
+    const SSL_CONNECTION *s, const SSL_SESSION *session);
 __owur int ssl_cipher_up_ref(const SSL_CIPHER *cipher);
 void ssl_cipher_free(const SSL_CIPHER *cipher);
 __owur const SSL_CIPHER *ssl_cipher_canon(const SSL_CONNECTION *s,
+    const SSL_CIPHER *cipher);
+__owur const SSL_CIPHER *ssl_cipher_canon_enabled(const SSL_CONNECTION *s,
     const SSL_CIPHER *cipher);
 int ssl_cipher_stack_find(STACK_OF(SSL_CIPHER) *sk,
     const SSL_CIPHER *cipher);

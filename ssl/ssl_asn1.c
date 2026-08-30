@@ -135,9 +135,13 @@ int i2d_SSL_SESSION(const SSL_SESSION *in, unsigned char **pp)
     long l;
     int ret;
 
-    if (in == NULL || in->provider_cipher_seen
-        || (in->cipher == NULL && in->cipher_id == 0))
+    if (in == NULL || (in->cipher == NULL && in->cipher_id == 0))
         return 0;
+    if (in->provider_cipher_seen) {
+        ERR_raise(ERR_LIB_SSL,
+            SSL_R_PROVIDER_CIPHERSUITE_SESSION_UNSUPPORTED);
+        return 0;
+    }
 
     memset(&as, 0, sizeof(as));
 
@@ -424,9 +428,8 @@ SSL_SESSION *d2i_SSL_SESSION_ex(SSL_SESSION **a, const unsigned char **pp,
 
     M_ASN1_free_of(as, SSL_SESSION_ASN1);
 
-    /* A successful decode replaces the logical session with a built-in one. */
+    /* A successful decode replaces the provider-cipher state. */
     ret->provider_cipher_seen = 0;
-    ret->not_resumable = 0;
 
     if ((a != NULL) && (*a == NULL))
         *a = ret;

@@ -3265,9 +3265,13 @@ int SSL_new_session_ticket(SSL *s)
     /* If we are in init because we're sending tickets, okay to send more. */
     if ((SSL_in_init(s) && sc->ext.extra_tickets_expected == 0)
         || SSL_IS_FIRST_HANDSHAKE(sc) || !sc->server
-        || !SSL_CONNECTION_IS_VERSION13(sc)
-        || sc->session->provider_cipher_seen)
+        || !SSL_CONNECTION_IS_VERSION13(sc))
         return 0;
+    if (sc->session->provider_cipher_seen) {
+        ERR_raise(ERR_LIB_SSL,
+            SSL_R_PROVIDER_CIPHERSUITE_SESSION_UNSUPPORTED);
+        return 0;
+    }
     sc->ext.extra_tickets_expected++;
     if (!RECORD_LAYER_write_pending(&sc->rlayer) && !SSL_in_init(s))
         ossl_statem_set_in_init(sc, 1);
@@ -3622,7 +3626,11 @@ STACK_OF(SSL_CIPHER) *SSL_get1_supported_ciphers(SSL *s)
     if (!ssl_set_client_disabled(sc))
         return NULL;
     for (i = 0; i < sk_SSL_CIPHER_num(ciphers); i++) {
-        const SSL_CIPHER *c = sk_SSL_CIPHER_value(ciphers, i);
+        const SSL_CIPHER *c = ssl_cipher_canon_enabled(sc,
+            sk_SSL_CIPHER_value(ciphers, i));
+
+        if (c == NULL)
+            continue;
         if (!ssl_cipher_disabled(sc, c, SSL_SECOP_CIPHER_SUPPORTED)) {
             if (!sk)
                 sk = sk_SSL_CIPHER_new_null();
@@ -5111,12 +5119,13 @@ void ssl_update_cache(SSL_CONNECTION *s, int mode)
     int i;
 
     /*
-     * If the session_id_length is 0, we are not supposed to cache it, and it
-     * would be rather hard to do anyway :-). Also if the session has already
-     * been marked as not_resumable we should not cache it for later reuse.
+     * Sessions without an id and sessions marked not_resumable are normally
+     * neither stored nor reported. Provider-cipher sessions proceed only to
+     * the notification callback; the internal-store gate below excludes them.
      */
-    if (s->session->session_id_length == 0 || s->session->not_resumable
-        || s->session->provider_cipher_seen)
+    if ((s->session->session_id_length == 0
+            || s->session->not_resumable)
+        && !s->session->provider_cipher_seen)
         return;
 
     /*
@@ -5146,7 +5155,8 @@ void ssl_update_cache(SSL_CONNECTION *s, int mode)
          *   session timeout events
          * - SSL_OP_NO_TICKET is set in which case it is a stateful ticket
          */
-        if ((i & SSL_SESS_CACHE_NO_INTERNAL_STORE) == 0
+        if (!s->session->provider_cipher_seen
+            && (i & SSL_SESS_CACHE_NO_INTERNAL_STORE) == 0
             && (!SSL_CONNECTION_IS_VERSION13(s)
                 || !s->server
                 || (s->max_early_data > 0
