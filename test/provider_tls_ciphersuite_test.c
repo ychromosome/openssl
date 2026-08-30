@@ -326,6 +326,13 @@ typedef struct {
     int calls;
 } SNI_SWITCH_DATA;
 
+typedef struct {
+    SSL_CTX *ctx;
+    int calls;
+    int switch_ok;
+    int ignore_failure;
+} LATE_SWITCH_DATA;
+
 static int sni_switch_cb(SSL *ssl, int *alert, void *arg)
 {
     SNI_SWITCH_DATA *data = arg;
@@ -362,6 +369,47 @@ static int client_hello_switch_cb(SSL *ssl, int *alert, void *arg)
         return SSL_CLIENT_HELLO_ERROR;
     }
     return SSL_CLIENT_HELLO_SUCCESS;
+}
+
+static int alpn_switch_cb(SSL *ssl, const unsigned char **out,
+    unsigned char *outlen, const unsigned char *in, unsigned int inlen,
+    void *arg)
+{
+    LATE_SWITCH_DATA *data = arg;
+
+    data->calls++;
+    data->switch_ok = SSL_set_SSL_CTX(ssl, data->ctx) != NULL;
+    if ((!data->switch_ok && !data->ignore_failure)
+        || inlen < 2 || in[0] == 0
+        || (unsigned int)in[0] + 1U > inlen)
+        return SSL_TLSEXT_ERR_ALERT_FATAL;
+    *out = in + 1;
+    *outlen = in[0];
+    return SSL_TLSEXT_ERR_OK;
+}
+
+static int reject_provider_security_cb(const SSL *ssl, const SSL_CTX *ctx,
+    int op, int bits, int nid, void *other, void *ex)
+{
+    const SSL_CIPHER *cipher = other;
+
+    if (op == SSL_SECOP_CIPHER_SHARED && cipher != NULL
+        && cipher->origin == SSL_CIPHER_ORIGIN_PROVIDER)
+        return 0;
+    return 1;
+}
+
+static int reject_provider_client_security_cb(const SSL *ssl,
+    const SSL_CTX *ctx, int op, int bits, int nid, void *other, void *ex)
+{
+    const SSL_CIPHER *cipher = other;
+
+    if (ssl == NULL)
+        return 0;
+    if (op == SSL_SECOP_CIPHER_CHECK && cipher != NULL
+        && cipher->origin == SSL_CIPHER_ORIGIN_PROVIDER)
+        return 0;
+    return 1;
 }
 
 static int check_valid_suite(const SSL_CIPHER *suite, int index,
@@ -869,6 +917,137 @@ end:
     SSL_CTX_free(cctx);
     SSL_CTX_free(data.first);
     SSL_CTX_free(data.second);
+    ERR_clear_error();
+    tls_provider_set_ciphersuite_mode(NULL);
+    return ret;
+}
+
+static int test_late_provider_context_switch(int idx)
+{
+    static const unsigned char alpn[] = { 2, 'h', '2' };
+    SSL_CTX *sctx = NULL, *cctx = NULL, *alternate = NULL;
+    SSL *serverssl = NULL, *clientssl = NULL;
+    LATE_SWITCH_DATA data = { 0 };
+    int expect_success = idx == 0;
+    int ret = 0;
+
+    tls_provider_set_ciphersuite_mode("valid");
+    if (!TEST_true(create_ssl_ctx_pair(libctx, TLS_server_method(),
+            TLS_client_method(), TLS1_3_VERSION, TLS1_3_VERSION,
+            &sctx, &cctx, cert, privkey))
+        || !TEST_true(SSL_CTX_set_num_tickets(sctx, 0))
+        || !TEST_true(SSL_CTX_set_ciphersuites(sctx, TLS_TEST_SHA256_NAME))
+        || !TEST_true(SSL_CTX_set_ciphersuites(cctx, TLS_TEST_SHA256_NAME)))
+        goto end;
+
+    tls_provider_set_ciphersuite_mode(idx == 1 || idx == 4 ? "unsupported"
+            : idx == 2
+            ? "valid-conflicting"
+            : "valid");
+    if (!TEST_true(create_ssl_ctx_pair(libctx, TLS_server_method(), NULL,
+            TLS1_3_VERSION, TLS1_3_VERSION, &alternate, NULL, cert, privkey)))
+        goto end;
+    if (idx != 1 && idx != 4
+        && !TEST_true(SSL_CTX_set_ciphersuites(alternate,
+            TLS_TEST_SHA256_NAME)))
+        goto end;
+    if (idx == 3)
+        SSL_CTX_set_security_callback(alternate,
+            reject_provider_security_cb);
+    tls_provider_set_ciphersuite_mode("valid");
+
+    data.ctx = alternate;
+    data.ignore_failure = idx == 4;
+    SSL_CTX_set_alpn_select_cb(sctx, alpn_switch_cb, &data);
+    if (!TEST_true(create_ssl_objects(sctx, cctx, &serverssl, &clientssl,
+            NULL, NULL))
+        || !TEST_int_eq(SSL_set_alpn_protos(clientssl, alpn, sizeof(alpn)), 0))
+        goto end;
+
+    if (expect_success) {
+        if (!TEST_true(create_ssl_connection(serverssl, clientssl,
+                SSL_ERROR_NONE)))
+            goto end;
+    } else if (!TEST_false(create_ssl_connection(serverssl, clientssl,
+                   SSL_ERROR_NONE))) {
+        goto end;
+    }
+    if (!TEST_int_eq(data.calls, 1)
+        || !TEST_int_eq(data.switch_ok, expect_success))
+        goto end;
+
+    ret = 1;
+end:
+    SSL_free(serverssl);
+    SSL_free(clientssl);
+    SSL_CTX_free(sctx);
+    SSL_CTX_free(cctx);
+    SSL_CTX_free(alternate);
+    ERR_clear_error();
+    tls_provider_set_ciphersuite_mode(NULL);
+    return ret;
+}
+
+static int test_installed_provider_context_switch(void)
+{
+    SSL_CTX *sctx = NULL, *cctx = NULL, *equivalent = NULL, *missing = NULL;
+    SSL_CTX *rejected = NULL;
+    SSL *serverssl = NULL, *clientssl = NULL;
+    SSL_CONNECTION *clientsc;
+    int ret = 0;
+
+    tls_provider_set_ciphersuite_mode("valid");
+    if (!TEST_true(create_ssl_ctx_pair(libctx, TLS_server_method(),
+            TLS_client_method(), TLS1_3_VERSION, TLS1_3_VERSION,
+            &sctx, &cctx, cert, privkey))
+        || !TEST_true(create_ssl_ctx_pair(libctx, NULL, TLS_client_method(),
+            TLS1_3_VERSION, TLS1_3_VERSION, NULL, &equivalent,
+            cert, privkey))
+        || !TEST_true(create_ssl_ctx_pair(libctx, NULL, TLS_client_method(),
+            TLS1_3_VERSION, TLS1_3_VERSION, NULL, &rejected,
+            cert, privkey))
+        || !TEST_true(SSL_CTX_set_num_tickets(sctx, 0))
+        || !TEST_true(SSL_CTX_set_ciphersuites(sctx, TLS_TEST_SHA256_NAME))
+        || !TEST_true(SSL_CTX_set_ciphersuites(cctx, TLS_TEST_SHA256_NAME))
+        || !TEST_true(SSL_CTX_set_ciphersuites(equivalent,
+            TLS_TEST_SHA256_NAME))
+        || !TEST_true(SSL_CTX_set_ciphersuites(rejected,
+            TLS_TEST_SHA256_NAME)))
+        goto end;
+    SSL_CTX_set_security_callback(rejected,
+        reject_provider_client_security_cb);
+
+    tls_provider_set_ciphersuite_mode("unsupported");
+    if (!TEST_true(create_ssl_ctx_pair(libctx, NULL, TLS_client_method(),
+            TLS1_3_VERSION, TLS1_3_VERSION, NULL, &missing, cert, privkey)))
+        goto end;
+    tls_provider_set_ciphersuite_mode("valid");
+
+    if (!TEST_true(create_ssl_objects(sctx, cctx, &serverssl, &clientssl,
+            NULL, NULL))
+        || !TEST_true(create_ssl_connection(serverssl, clientssl,
+            SSL_ERROR_NONE))
+        || !TEST_ptr(clientsc = SSL_CONNECTION_FROM_SSL_ONLY(clientssl))
+        || !TEST_ptr(clientsc->session))
+        goto end;
+    clientsc->s3.tmp.new_cipher = NULL;
+    if (!TEST_ptr(SSL_set_SSL_CTX(clientssl, equivalent))
+        || !TEST_ptr_eq(SSL_get_SSL_CTX(clientssl), equivalent)
+        || !TEST_ptr_null(SSL_set_SSL_CTX(clientssl, rejected))
+        || !TEST_ptr_eq(SSL_get_SSL_CTX(clientssl), equivalent)
+        || !TEST_ptr_null(SSL_set_SSL_CTX(clientssl, missing))
+        || !TEST_ptr_eq(SSL_get_SSL_CTX(clientssl), equivalent))
+        goto end;
+
+    ret = 1;
+end:
+    SSL_free(serverssl);
+    SSL_free(clientssl);
+    SSL_CTX_free(sctx);
+    SSL_CTX_free(cctx);
+    SSL_CTX_free(equivalent);
+    SSL_CTX_free(rejected);
+    SSL_CTX_free(missing);
     ERR_clear_error();
     tls_provider_set_ciphersuite_mode(NULL);
     return ret;
@@ -1446,6 +1625,8 @@ int setup_tests(void)
     ADD_ALL_TESTS(test_provider_handshake, 2);
     ADD_TEST(test_provider_hrr);
     ADD_ALL_TESTS(test_sni_context_switch, 4);
+    ADD_ALL_TESTS(test_late_provider_context_switch, 5);
+    ADD_TEST(test_installed_provider_context_switch);
     ADD_TEST(test_server_context_rejects_conflicting_descriptor);
     ADD_ALL_TESTS(test_client_context_rejects_provider_mismatch, 2);
     ADD_TEST(test_switched_context_supported_ciphers);
