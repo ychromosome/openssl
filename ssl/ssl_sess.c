@@ -152,6 +152,24 @@ int ssl_session_cipher_is_transport_admissible(const SSL_CONNECTION *s,
         || session->cipher->origin != SSL_CIPHER_ORIGIN_PROVIDER;
 }
 
+int ssl_session_cipher_is_early_data_admissible(const SSL_CONNECTION *s,
+    const SSL_SESSION *session)
+{
+    const SSL_CIPHER *canonical;
+    int op;
+
+    if (session == NULL || session->cipher == NULL
+        || session->cipher->origin != SSL_CIPHER_ORIGIN_PROVIDER)
+        return 1;
+
+    canonical = ssl_cipher_canon_enabled(s, session->cipher);
+    if (canonical == NULL)
+        return 0;
+    op = s->server ? SSL_SECOP_CIPHER_SHARED : SSL_SECOP_CIPHER_SUPPORTED;
+    return ssl_security(s, op, canonical->strength_bits, 0,
+        (void *)canonical);
+}
+
 /*
  * Create a new SSL_SESSION and duplicate the contents of |src| into it. If
  * ticket == 0 then no ticket information is duplicated, otherwise it is.

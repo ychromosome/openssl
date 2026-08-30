@@ -530,6 +530,176 @@ end:
     return ret;
 }
 
+static int test_provider_psk_early_data_admissibility(void)
+{
+    const SUITE_VARIANT *v = &variants[0];
+    SSL_CTX *sctx = NULL, *cctx = NULL, *foreignctx = NULL;
+    SSL *serverssl = NULL, *clientssl = NULL, *foreignssl = NULL;
+    SSL_CONNECTION *serversc, *clientsc;
+    SSL_SESSION *serverlocal = NULL, *clientlocal = NULL, *foreign = NULL;
+    int ret = 0;
+
+    if (!make_pair(v->mode, v->provname, v->provname, cert, privkey,
+            &sctx, &cctx))
+        goto end;
+
+    tls_provider_set_ciphersuite_mode("valid-conflicting-sha256");
+    if (!TEST_ptr(foreignctx = SSL_CTX_new_ex(libctx, NULL, TLS_method()))
+        || !TEST_true(SSL_CTX_set_ciphersuites(foreignctx, v->provname)))
+        goto end;
+    tls_provider_set_ciphersuite_mode("valid");
+
+    if (!TEST_ptr(serverssl = SSL_new(sctx))
+        || !TEST_ptr(clientssl = SSL_new(cctx))
+        || !TEST_ptr(foreignssl = SSL_new(foreignctx))
+        || !TEST_ptr(serversc = SSL_CONNECTION_FROM_SSL_ONLY(serverssl))
+        || !TEST_ptr(clientsc = SSL_CONNECTION_FROM_SSL_ONLY(clientssl))
+        || !TEST_ptr(serverlocal = make_provider_psk(serverssl, v, 1024))
+        || !TEST_ptr(clientlocal = make_provider_psk(clientssl, v, 1024))
+        || !TEST_ptr(foreign = make_provider_psk(foreignssl, v, 1024)))
+        goto end;
+
+    SSL_set_accept_state(serverssl);
+    SSL_set_connect_state(clientssl);
+    serversc->s3.tmp.min_ver = serversc->s3.tmp.max_ver = TLS1_3_VERSION;
+    clientsc->s3.tmp.min_ver = clientsc->s3.tmp.max_ver = TLS1_3_VERSION;
+    if (!TEST_true(ssl_session_cipher_is_early_data_admissible(serversc,
+            serverlocal))
+        || !TEST_true(ssl_session_cipher_is_early_data_admissible(clientsc,
+            clientlocal))
+        || !TEST_false(ssl_session_cipher_is_early_data_admissible(serversc,
+            foreign))
+        || !TEST_false(ssl_session_cipher_is_early_data_admissible(clientsc,
+            foreign)))
+        goto end;
+
+    ret = 1;
+end:
+    SSL_SESSION_free(serverlocal);
+    SSL_SESSION_free(clientlocal);
+    SSL_SESSION_free(foreign);
+    SSL_free(serverssl);
+    SSL_free(clientssl);
+    SSL_free(foreignssl);
+    SSL_CTX_free(sctx);
+    SSL_CTX_free(cctx);
+    SSL_CTX_free(foreignctx);
+    ERR_clear_error();
+    tls_provider_set_ciphersuite_mode(NULL);
+    return ret;
+}
+
+static int test_provider_psk_early_context_switch(void)
+{
+    static const unsigned char early[] = "provider early data";
+    const SUITE_VARIANT *v = &variants[0];
+    SSL_CTX *sctx = NULL, *cctx = NULL, *missing = NULL;
+    SSL *serverssl = NULL, *clientssl = NULL;
+    size_t written = 0;
+    int ret = 0;
+
+    if (!make_pair(v->mode, v->provname, v->provname, cert, privkey,
+            &sctx, &cctx)
+        || !TEST_true(SSL_CTX_set_max_early_data(sctx, 1024)))
+        goto end;
+
+    tls_provider_set_ciphersuite_mode("unsupported");
+    if (!TEST_ptr(missing = SSL_CTX_new_ex(libctx, NULL, TLS_client_method())))
+        goto end;
+    tls_provider_set_ciphersuite_mode("valid");
+
+    SSL_CTX_set_psk_use_session_callback(cctx, use_session_cb);
+    SSL_CTX_set_psk_find_session_callback(sctx, find_session_cb);
+    if (!TEST_true(create_ssl_objects(sctx, cctx, &serverssl, &clientssl,
+            NULL, NULL))
+        || !TEST_ptr(clientpsk = make_provider_psk(clientssl, v, 1024))
+        || !TEST_ptr(serverpsk = make_provider_psk(serverssl, v, 1024))
+        || !TEST_true(SSL_write_early_data(clientssl, early, sizeof(early),
+            &written))
+        || !TEST_size_t_eq(written, sizeof(early))
+        || !TEST_ptr_null(SSL_set_SSL_CTX(clientssl, missing))
+        || !TEST_false(create_ssl_connection(serverssl, clientssl,
+            SSL_ERROR_NONE)))
+        goto end;
+
+    ret = 1;
+end:
+    SSL_SESSION_free(clientpsk);
+    SSL_SESSION_free(serverpsk);
+    clientpsk = serverpsk = NULL;
+    SSL_free(serverssl);
+    SSL_free(clientssl);
+    SSL_CTX_free(sctx);
+    SSL_CTX_free(cctx);
+    SSL_CTX_free(missing);
+    ERR_clear_error();
+    tls_provider_set_ciphersuite_mode(NULL);
+    return ret;
+}
+
+static int test_external_psk_foreign_server_rejects_early_data(void)
+{
+    static const unsigned char early[] = "foreign provider early data";
+    const SUITE_VARIANT *v = &variants[0];
+    SSL_CTX *sctx = NULL, *cctx = NULL, *foreignctx = NULL;
+    SSL *serverssl = NULL, *clientssl = NULL, *foreignssl = NULL;
+    unsigned char buf[sizeof(early)];
+    size_t written = 0, readbytes = 0;
+    int ret = 0;
+
+    if (!make_pair(v->mode, v->provname, v->provname, cert, privkey,
+            &sctx, &cctx)
+        || !TEST_true(SSL_CTX_set_max_early_data(sctx, 1024)))
+        goto end;
+
+    tls_provider_set_ciphersuite_mode("valid-conflicting-sha256");
+    if (!TEST_ptr(foreignctx = SSL_CTX_new_ex(libctx, NULL, TLS_method()))
+        || !TEST_true(SSL_CTX_set_ciphersuites(foreignctx, v->provname))
+        || !TEST_ptr(foreignssl = SSL_new(foreignctx)))
+        goto end;
+    tls_provider_set_ciphersuite_mode("valid");
+
+    SSL_CTX_set_psk_use_session_callback(cctx, use_session_cb);
+    SSL_CTX_set_psk_find_session_callback(sctx, find_session_cb);
+    if (!TEST_true(create_ssl_objects(sctx, cctx, &serverssl, &clientssl,
+            NULL, NULL))
+        || !TEST_ptr(clientpsk = make_provider_psk(clientssl, v, 1024))
+        || !TEST_ptr(serverpsk = make_provider_psk(foreignssl, v, 1024))
+        || !TEST_true(SSL_write_early_data(clientssl, early, sizeof(early),
+            &written))
+        || !TEST_size_t_eq(written, sizeof(early))
+        || !TEST_int_eq(SSL_read_early_data(serverssl, buf, sizeof(buf),
+                            &readbytes),
+            SSL_READ_EARLY_DATA_FINISH)
+        || !TEST_size_t_eq(readbytes, 0)
+        || !TEST_true(create_ssl_connection(serverssl, clientssl,
+            SSL_ERROR_NONE))
+        || !TEST_true(SSL_session_reused(clientssl))
+        || !TEST_true(SSL_session_reused(serverssl))
+        || !TEST_int_ne(SSL_get_early_data_status(clientssl),
+            SSL_EARLY_DATA_ACCEPTED)
+        || !TEST_int_ne(SSL_get_early_data_status(serverssl),
+            SSL_EARLY_DATA_ACCEPTED)
+        || !check_negotiated(serverssl, clientssl, v->codepoint,
+            SSL_CIPHER_ORIGIN_PROVIDER))
+        goto end;
+
+    ret = 1;
+end:
+    SSL_SESSION_free(clientpsk);
+    SSL_SESSION_free(serverpsk);
+    clientpsk = serverpsk = NULL;
+    SSL_free(serverssl);
+    SSL_free(clientssl);
+    SSL_free(foreignssl);
+    SSL_CTX_free(sctx);
+    SSL_CTX_free(cctx);
+    SSL_CTX_free(foreignctx);
+    ERR_clear_error();
+    tls_provider_set_ciphersuite_mode(NULL);
+    return ret;
+}
+
 static int test_provider_psk_nonstream_rejected(void)
 {
     SSL_CTX *tlsctx = NULL, *dtlsctx = NULL;
@@ -1592,6 +1762,9 @@ int setup_tests(void)
     ADD_TEST(test_stateful_cache_provider_transition);
     ADD_TEST(test_external_cache_rejects_provider_session);
     ADD_ALL_TESTS(test_external_psk_provider, 4);
+    ADD_TEST(test_provider_psk_early_data_admissibility);
+    ADD_TEST(test_provider_psk_early_context_switch);
+    ADD_TEST(test_external_psk_foreign_server_rejects_early_data);
     ADD_TEST(test_provider_psk_nonstream_rejected);
     ADD_ALL_TESTS(test_stateless_cookie, 2);
     ADD_ALL_TESTS(test_security_callback, 4);

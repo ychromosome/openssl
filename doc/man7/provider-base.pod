@@ -644,6 +644,8 @@ registry failures also abort context creation.
 
 Provider-defined ciphersuites are not added to the default ciphersuite list and
 must be selected by name. Their code points require deployment coordination.
+After one is selected or installed, SSL_set_SSL_CTX() requires an equivalent
+suite in the target context and approval from its security callback.
 They are restricted to TLS 1.3 and are not available for DTLS or QUIC.
 DTLS 1.3 record-number encryption and QUIC header protection require a
 companion algorithm that this capability does not declare.
@@ -652,8 +654,10 @@ preferences do not apply. Provider-defined ciphersuites do not use kTLS.
 Sessions that have used a provider-defined ciphersuite are not resumable,
 cacheable or serialisable and do not produce session tickets. An application
 may supply a session with such a suite through the stream TLS 1.3 external-PSK
-callbacks, including for 0-RTT. DTLS and QUIC reject such sessions. This does
-not make that session eligible for
+callbacks, including for 0-RTT. Provider-suite 0-RTT requires an equivalent
+enabled descriptor under the connection policy; otherwise early data is
+suppressed or rejected. DTLS and QUIC reject such sessions. This does not make
+that session eligible for
 ordinary resumption, caching, serialisation or tickets.
 
 This capability supports the existing stream TLS 1.3 record profile: a
