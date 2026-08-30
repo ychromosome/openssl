@@ -87,11 +87,13 @@ The capability does not supply a standard name, so
 `SSL_CIPHER_standard_name()` returns `NULL`.
 
 Wire IDs resolve through the connection's original `session_ctx`.
-`SSL_set_SSL_CTX()` keeps its existing behavior. Switching to a context with
-a provider suite requires the same fetched cipher and digest implementations
-and equivalent metadata in both contexts. A different resolved implementation
-fails closed. The suite must also remain enabled in the connection's
-ciphersuite list.
+After a provider suite has been selected or installed, `SSL_set_SSL_CTX()`
+requires the target context to expose the same fetched cipher and digest
+implementations with equivalent metadata. The suite must remain enabled in the
+connection's ciphersuite list, and the target context's security callback must
+permit it. A mismatch fails before the context changes. Built-in suites keep
+the existing `SSL_set_SSL_CTX()` behavior. A rejected switch during a
+handshake is fatal even if the callback ignores the return value.
 
 Ownership and sessions
 ----------------------
@@ -107,7 +109,10 @@ marker but preserves any existing `not_resumable` state.
 
 Stream TLS 1.3 external-PSK callbacks may explicitly supply a session
 containing a provider suite, including for 0-RTT. DTLS and QUIC reject such
-sessions.
+sessions. Provider-suite 0-RTT requires an equivalent descriptor in the
+connection registry, an enabled suite, and approval from the connection's
+security callback. Otherwise early data is suppressed or rejected while the
+session remains eligible for an ordinary same-digest external-PSK handshake.
 The session remains ineligible for
 `SSL_set_session()`, caches, serialisation and tickets. A session produced by
 the completed connection remains subject to the same restrictions.

@@ -77,6 +77,9 @@ An empty list is permissible. The default value for this setting is:
 SSL_set_ciphersuites() is the same as SSL_CTX_set_ciphersuites() except it
 configures the ciphersuites for B<ssl>. Provider-defined names resolve through
 the original SSL_CTX; L<SSL_set_SSL_CTX(3)> does not replace that registry.
+After a provider-defined suite has been selected or installed,
+SSL_set_SSL_CTX() rejects a target context that lacks an equivalent suite or
+whose security callback rejects it.
 
 OSSL_default_cipher_list() returns the default cipher string for TLSv1.2
 (and earlier) ciphers. OSSL_default_ciphersuites() returns the default

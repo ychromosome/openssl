@@ -209,12 +209,18 @@ const SSL_CIPHER *ssl_cipher_canon(const SSL_CONNECTION *s,
 const SSL_CIPHER *ssl_cipher_canon_enabled(const SSL_CONNECTION *s,
     const SSL_CIPHER *cipher)
 {
+    return ssl_cipher_canon_for_ctx(s, SSL_CONNECTION_GET_CTX(s), cipher);
+}
+
+const SSL_CIPHER *ssl_cipher_canon_for_ctx(const SSL_CONNECTION *s,
+    const SSL_CTX *ctx, const SSL_CIPHER *cipher)
+{
     const SSL_CIPHER *canonical = ssl_cipher_canon(s, cipher);
-    SSL_CTX *ctx;
 
     if (canonical == NULL || canonical->origin != SSL_CIPHER_ORIGIN_PROVIDER)
         return canonical;
-    ctx = SSL_CONNECTION_GET_CTX(s);
+    if (ctx == NULL)
+        return NULL;
     if (ctx != s->session_ctx
         && !ssl_provider_ciphersuite_equivalent(canonical,
             ssl_provider_ciphersuite_by_id(ctx, canonical->id)))

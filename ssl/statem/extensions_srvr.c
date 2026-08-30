@@ -1568,6 +1568,9 @@ int tls_parse_ctos_psk(SSL_CONNECTION *s, PACKET *pkt, unsigned int context,
             s->ext.ticket_expected = 1;
             continue;
         }
+        if (s->ext.early_data_ok
+            && !ssl_session_cipher_is_early_data_admissible(s, sess))
+            s->ext.early_data_ok = 0;
         /*
          * Same-hash ciphersuite changes are allowed for TLSv1.3 PSK
          * resumption, but RFC 9846 Section 4.3.10 requires the selected

@@ -1267,6 +1267,11 @@ static int tls_prov_get_ciphersuites(OSSL_CALLBACK *cb, void *arg)
         params[TLS_CIPHERSUITE_SECBITS_PARAM].data = &sha384_secbits;
         return cb(params, arg);
     }
+    if (strcmp(tls_ciphersuite_mode, "valid-conflicting-sha256") == 0) {
+        params[TLS_CIPHERSUITE_AEAD_PARAM].data = aes256_gcm;
+        params[TLS_CIPHERSUITE_AEAD_PARAM].data_size = sizeof(aes256_gcm);
+        return cb(params, arg);
+    }
     if (strcmp(tls_ciphersuite_mode, "valid-unknown-param") == 0) {
         params[TLS_CIPHERSUITE_END_PARAM] = OSSL_PARAM_construct_utf8_string("tls-test-optional",
             tls_ciphersuite_name, 0);

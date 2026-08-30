@@ -1266,6 +1266,7 @@ EXT_RETURN tls_construct_ctos_early_data(SSL_CONNECTION *s, WPACKET *pkt,
     edsess = tls13_check_resumption_psk(s) ? s->session : psksess;
     if (s->early_data_state != SSL_EARLY_DATA_CONNECTING
         || edsess == NULL
+        || !ssl_session_cipher_is_early_data_admissible(s, edsess)
         || edsess->ext.max_early_data == 0) {
         s->max_early_data = 0;
         if (s->early_data_state == SSL_EARLY_DATA_CONNECTING) {
