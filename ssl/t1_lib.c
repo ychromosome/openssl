@@ -21,6 +21,7 @@
 #include <openssl/bn.h>
 #include <openssl/provider.h>
 #include <openssl/param_build.h>
+#include <openssl/sha.h>
 #include "internal/nelem.h"
 #include "internal/sizes.h"
 #include "internal/tlsgroups.h"
@@ -229,6 +230,9 @@ struct provider_ctx_data_st {
 };
 
 #ifndef OPENSSL_NO_TLS1_3
+#define TLS_CIPHERSUITE_NAME_MAX_LEN 255
+#define TLS_CIPHERSUITE_ALGORITHM_NAME_MAX_LEN 255
+
 struct provider_ciphersuite_data_st {
     SSL_CTX *ctx;
     OSSL_PROVIDER *provider;
@@ -240,7 +244,8 @@ static int tls_ciphersuite_name_is_valid(const char *name)
 {
     const unsigned char *p = (const unsigned char *)name;
 
-    if (name == NULL || *name == '\0' || strlen(name) > 255)
+    if (name == NULL || *name == '\0'
+        || strlen(name) > TLS_CIPHERSUITE_NAME_MAX_LEN)
         return 0;
 
     for (; *p != '\0'; p++) {
@@ -254,28 +259,50 @@ static int tls_ciphersuite_get_string_param(const OSSL_PARAM params[],
     const char *key, char *value, size_t value_size)
 {
     const OSSL_PARAM *p = OSSL_PARAM_locate_const(params, key);
-    const char *source;
+    char *target = value;
     size_t len;
 
     if (p == NULL || p->data_type != OSSL_PARAM_UTF8_STRING
-        || p->data == NULL || p->data_size == 0 || value_size == 0)
+        || p->data == NULL || p->data_size == 0 || value_size == 0
+        || p->data_size > value_size)
         return 0;
 
-    source = p->data;
-    len = OPENSSL_strnlen(source, p->data_size);
-    if (len == 0 || len >= value_size
-        || (len < p->data_size && len + 1 != p->data_size))
+    if (!OSSL_PARAM_get_utf8_string(p, &target, value_size))
         return 0;
 
-    memcpy(value, source, len);
-    value[len] = '\0';
-    return 1;
+    len = strlen(value);
+    return len != 0
+        && (p->data_size == len || p->data_size == len + 1);
+}
+
+static int tls_ciphersuite_get_uint_param(const OSSL_PARAM params[],
+    const char *key, unsigned int *value)
+{
+    const OSSL_PARAM *p = OSSL_PARAM_locate_const(params, key);
+
+    if (p == NULL || p->data_type != OSSL_PARAM_UNSIGNED_INTEGER
+        || p->data == NULL || p->data_size == 0
+        || p->data_size > sizeof(uint64_t))
+        return 0;
+
+    return OSSL_PARAM_get_uint(p, value);
 }
 
 static int ssl_provider_ciphersuite_name_cmp(
     const SSL_CIPHER *const *ap, const SSL_CIPHER *const *bp)
 {
     return OPENSSL_strcasecmp((*ap)->name, (*bp)->name);
+}
+
+static int tls_ciphersuite_aead_key_length_is_valid(
+    const EVP_CIPHER *cipher, int keylen)
+{
+    if (EVP_CIPHER_is_a(cipher, "AES-128-GCM"))
+        return keylen == 16;
+    if (EVP_CIPHER_is_a(cipher, "AES-256-GCM")
+        || EVP_CIPHER_is_a(cipher, "ChaCha20-Poly1305"))
+        return keylen == 32;
+    return 1;
 }
 #endif
 
@@ -316,8 +343,9 @@ static int add_provider_ciphersuite(const OSSL_PARAM params[], void *data)
 {
     struct provider_ciphersuite_data_st *pcd = data;
     SSL_CTX *ctx = pcd->ctx;
-    const OSSL_PARAM *p;
-    char name[256] = { 0 }, aead_name[256], digest_name[256];
+    char name[TLS_CIPHERSUITE_NAME_MAX_LEN + 1] = { 0 };
+    char aead_name[TLS_CIPHERSUITE_ALGORITHM_NAME_MAX_LEN + 1];
+    char digest_name[TLS_CIPHERSUITE_ALGORITHM_NAME_MAX_LEN + 1];
     const char *reason = "invalid descriptor";
     unsigned int codepoint = 0, secbits = 0, taglen = 0;
     uint32_t id;
@@ -341,9 +369,8 @@ static int add_provider_ciphersuite(const OSSL_PARAM params[], void *data)
         goto invalid;
     }
 
-    p = OSSL_PARAM_locate_const(params,
-        OSSL_CAPABILITY_TLS_CIPHERSUITE_CODE_POINT);
-    if (p == NULL || !OSSL_PARAM_get_uint(p, &codepoint)
+    if (!tls_ciphersuite_get_uint_param(params,
+            OSSL_CAPABILITY_TLS_CIPHERSUITE_CODE_POINT, &codepoint)
         || codepoint == 0 || codepoint > UINT16_MAX
         || ossl_is_grease_value((uint16_t)codepoint)) {
         reason = "invalid code point";
@@ -351,17 +378,15 @@ static int add_provider_ciphersuite(const OSSL_PARAM params[], void *data)
     }
     id = SSL3_CK_CIPHERSUITE_FLAG | codepoint;
 
-    p = OSSL_PARAM_locate_const(params,
-        OSSL_CAPABILITY_TLS_CIPHERSUITE_SECURITY_BITS);
-    if (p == NULL || !OSSL_PARAM_get_uint(p, &secbits)
+    if (!tls_ciphersuite_get_uint_param(params,
+            OSSL_CAPABILITY_TLS_CIPHERSUITE_SECURITY_BITS, &secbits)
         || secbits < 128 || secbits > INT_MAX) {
         reason = "invalid security bits";
         goto invalid;
     }
 
-    p = OSSL_PARAM_locate_const(params,
-        OSSL_CAPABILITY_TLS_CIPHERSUITE_TAG_LENGTH);
-    if (p == NULL || !OSSL_PARAM_get_uint(p, &taglen)
+    if (!tls_ciphersuite_get_uint_param(params,
+            OSSL_CAPABILITY_TLS_CIPHERSUITE_TAG_LENGTH, &taglen)
         || taglen != EVP_GCM_TLS_TAG_LEN) {
         reason = "invalid tag length";
         goto invalid;
@@ -385,6 +410,7 @@ static int add_provider_ciphersuite(const OSSL_PARAM params[], void *data)
         || EVP_CIPHER_get_block_size(cipher) != 1
         || keylen <= 0
         || keylen > EVP_MAX_KEY_LENGTH
+        || !tls_ciphersuite_aead_key_length_is_valid(cipher, keylen)
         || EVP_CIPHER_get_iv_length(cipher) != 12
         || secbits > (unsigned int)keylen * 8U) {
         reason = "unsupported AEAD profile";
@@ -398,9 +424,11 @@ static int add_provider_ciphersuite(const OSSL_PARAM params[], void *data)
         goto unavailable;
     }
     ERR_pop_to_mark();
-    if (EVP_MD_is_a(digest, OSSL_DIGEST_NAME_SHA2_256))
+    if (EVP_MD_is_a(digest, OSSL_DIGEST_NAME_SHA2_256)
+        && EVP_MD_get_size(digest) == SHA256_DIGEST_LENGTH)
         digest_idx = SSL_HANDSHAKE_MAC_SHA256;
-    else if (EVP_MD_is_a(digest, OSSL_DIGEST_NAME_SHA2_384))
+    else if (EVP_MD_is_a(digest, OSSL_DIGEST_NAME_SHA2_384)
+        && EVP_MD_get_size(digest) == SHA384_DIGEST_LENGTH)
         digest_idx = SSL_HANDSHAKE_MAC_SHA384;
     else {
         reason = "unsupported digest";
@@ -3364,6 +3392,10 @@ int ssl_cipher_disabled(const SSL_CONNECTION *s, const SSL_CIPHER *c,
         || c->algorithm_auth & s->s3.tmp.mask_a)
         return 1;
     if (s->s3.tmp.max_ver == 0)
+        return 1;
+
+    if (SSL_IS_QUIC_HANDSHAKE(s)
+        && c->origin == SSL_CIPHER_ORIGIN_PROVIDER)
         return 1;
 
     if (SSL_IS_QUIC_INT_HANDSHAKE(s))

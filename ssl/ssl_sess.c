@@ -144,6 +144,14 @@ int ssl_session_set_cipher(SSL_SESSION *session, const SSL_CIPHER *cipher)
     return 1;
 }
 
+int ssl_session_cipher_is_transport_admissible(const SSL_CONNECTION *s,
+    const SSL_SESSION *session)
+{
+    return session == NULL || session->cipher == NULL
+        || (!SSL_CONNECTION_IS_DTLS(s) && !SSL_IS_QUIC_HANDSHAKE(s))
+        || session->cipher->origin != SSL_CIPHER_ORIGIN_PROVIDER;
+}
+
 /*
  * Create a new SSL_SESSION and duplicate the contents of |src| into it. If
  * ticket == 0 then no ticket information is duplicated, otherwise it is.
@@ -546,6 +554,10 @@ SSL_SESSION *lookup_sess_in_cache(SSL_CONNECTION *s,
             }
         }
         CRYPTO_THREAD_unlock(s->session_ctx->lock);
+        if (ret != NULL && (ret->not_resumable || ret->provider_cipher_seen)) {
+            SSL_SESSION_free(ret);
+            ret = NULL;
+        }
         if (ret == NULL)
             ssl_tsan_counter(s->session_ctx, &s->session_ctx->stats.sess_miss);
     }
@@ -557,7 +569,7 @@ SSL_SESSION *lookup_sess_in_cache(SSL_CONNECTION *s,
             sess_id, (int)sess_id_len, &copy);
 
         if (ret != NULL) {
-            if (ret->not_resumable) {
+            if (ret->not_resumable || ret->provider_cipher_seen) {
                 /* If its not resumable then ignore this session */
                 if (!copy)
                     SSL_SESSION_free(ret);
@@ -786,8 +798,11 @@ int SSL_CTX_add_session(SSL_CTX *ctx, SSL_SESSION *c)
     int ret = 0;
     SSL_SESSION *s;
 
-    if (c->provider_cipher_seen)
+    if (c->provider_cipher_seen) {
+        ERR_raise(ERR_LIB_SSL,
+            SSL_R_PROVIDER_CIPHERSUITE_SESSION_UNSUPPORTED);
         return 0;
+    }
 
     /*
      * add just 1 reference count for the SSL_CTX's session cache even though
@@ -987,8 +1002,11 @@ int SSL_set_session(SSL *s, SSL_SESSION *session)
 
     if (sc == NULL)
         return 0;
-    if (session != NULL && session->provider_cipher_seen)
+    if (session != NULL && session->provider_cipher_seen) {
+        ERR_raise(ERR_LIB_SSL,
+            SSL_R_PROVIDER_CIPHERSUITE_SESSION_UNSUPPORTED);
         return 0;
+    }
 
     if (session != NULL && !SSL_SESSION_up_ref(session))
         return 0;

@@ -1170,7 +1170,8 @@ EXT_RETURN tls_construct_ctos_early_data(SSL_CONNECTION *s, WPACKET *pkt,
 
     if (s->psk_use_session_cb != NULL
         && (!s->psk_use_session_cb(ussl, handmd, &id, &idlen, &psksess)
-            || (psksess != NULL && psksess->ssl_version != version1_3))) {
+            || (psksess != NULL && psksess->ssl_version != version1_3)
+            || !ssl_session_cipher_is_transport_admissible(s, psksess))) {
         SSL_SESSION_free(psksess);
         SSLfatal(s, SSL_AD_INTERNAL_ERROR, SSL_R_BAD_PSK);
         return EXT_RETURN_FAIL;

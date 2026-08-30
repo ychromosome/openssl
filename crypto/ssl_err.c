@@ -371,6 +371,8 @@ static const ERR_STRING_DATA SSL_str_reasons[] = {
         "private key mismatch" },
     { ERR_PACK(ERR_LIB_SSL, 0, SSL_R_PROTOCOL_IS_SHUTDOWN),
         "protocol is shutdown" },
+    { ERR_PACK(ERR_LIB_SSL, 0, SSL_R_PROVIDER_CIPHERSUITE_SESSION_UNSUPPORTED),
+        "provider ciphersuite session unsupported" },
     { ERR_PACK(ERR_LIB_SSL, 0, SSL_R_PSK_IDENTITY_NOT_FOUND),
         "psk identity not found" },
     { ERR_PACK(ERR_LIB_SSL, 0, SSL_R_PSK_NO_CLIENT_CB), "psk no client cb" },

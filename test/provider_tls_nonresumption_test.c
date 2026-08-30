@@ -51,6 +51,18 @@ static int new_session_cb(SSL *ssl, SSL_SESSION *session)
     return 0;
 }
 
+static int check_provider_session_error(int result)
+{
+    unsigned long err = ERR_peek_last_error();
+    int ret = TEST_false(result)
+        && TEST_int_eq(ERR_GET_LIB(err), ERR_LIB_SSL)
+        && TEST_int_eq(ERR_GET_REASON(err),
+            SSL_R_PROVIDER_CIPHERSUITE_SESSION_UNSUPPORTED);
+
+    ERR_clear_error();
+    return ret;
+}
+
 static int make_ctx_pair(const char *mode, const char *ciphersuite,
     int tickets, SSL_CTX **sctx, SSL_CTX **cctx)
 {
@@ -138,11 +150,15 @@ static int test_provider_nonresumption_gates(void)
         || !TEST_true(server_session->provider_cipher_seen)
         || !TEST_true(client_session->provider_cipher_seen)
         || !TEST_false(SSL_SESSION_is_resumable(client_session))
-        || !TEST_false(SSL_new_session_ticket(serverssl))
-        || !TEST_int_eq(i2d_SSL_SESSION(client_session, NULL), 0)
-        || !TEST_false(SSL_CTX_add_session(cctx, client_session))
+        || !TEST_true(check_provider_session_error(
+            SSL_new_session_ticket(serverssl)))
+        || !TEST_true(check_provider_session_error(
+            i2d_SSL_SESSION(client_session, NULL)))
+        || !TEST_true(check_provider_session_error(
+            SSL_CTX_add_session(cctx, client_session)))
         || !TEST_ptr(probe = SSL_new(cctx))
-        || !TEST_false(SSL_set_session(probe, client_session))
+        || !TEST_true(check_provider_session_error(
+            SSL_set_session(probe, client_session)))
         || !TEST_ptr_null(SSL_get_session(probe))
         || !TEST_ptr(public_dup = SSL_SESSION_dup(client_session))
         || !TEST_true(public_dup->provider_cipher_seen)
@@ -156,9 +172,12 @@ static int test_provider_nonresumption_gates(void)
         || !TEST_true(SSL_SESSION_set_cipher(internal_dup, builtin))
         || !TEST_true(internal_dup->provider_cipher_seen)
         || !TEST_false(SSL_SESSION_is_resumable(internal_dup))
-        || !TEST_int_eq(i2d_SSL_SESSION(internal_dup, NULL), 0)
-        || !TEST_false(SSL_set_session(probe, internal_dup))
-        || !TEST_false(SSL_CTX_add_session(cctx, internal_dup))
+        || !TEST_true(check_provider_session_error(
+            i2d_SSL_SESSION(internal_dup, NULL)))
+        || !TEST_true(check_provider_session_error(
+            SSL_set_session(probe, internal_dup)))
+        || !TEST_true(check_provider_session_error(
+            SSL_CTX_add_session(cctx, internal_dup)))
         || !TEST_long_eq(SSL_CTX_sess_number(cctx), 0))
         goto end;
 
@@ -215,7 +234,7 @@ static int test_injected_ticket_preserves_marker(void)
     /* Inject a ticket from a non-conforming peer. */
     serverconn->session->provider_cipher_seen = 0;
     serverconn->session->not_resumable = 0;
-    nst_written = nst_read = 0;
+    nst_written = nst_read = new_session_calls = 0;
     if (!TEST_true(SSL_new_session_ticket(serverssl))
         || !TEST_true(SSL_write_ex(serverssl, message, sizeof(message),
             &written))
@@ -230,12 +249,15 @@ static int test_injected_ticket_preserves_marker(void)
         || !TEST_true(client_session->provider_cipher_seen)
         || !TEST_false(client_session->not_resumable)
         || !TEST_false(SSL_SESSION_is_resumable(client_session))
-        || !TEST_int_eq(new_session_calls, 0)
+        || !TEST_int_gt(new_session_calls, 0)
         || !TEST_long_eq(SSL_CTX_sess_number(cctx), 0)
-        || !TEST_int_eq(i2d_SSL_SESSION(client_session, NULL), 0)
-        || !TEST_false(SSL_CTX_add_session(cctx, client_session))
+        || !TEST_true(check_provider_session_error(
+            i2d_SSL_SESSION(client_session, NULL)))
+        || !TEST_true(check_provider_session_error(
+            SSL_CTX_add_session(cctx, client_session)))
         || !TEST_ptr(probe = SSL_new(cctx))
-        || !TEST_false(SSL_set_session(probe, client_session)))
+        || !TEST_true(check_provider_session_error(
+            SSL_set_session(probe, client_session))))
         goto end;
 
     ret = 1;
