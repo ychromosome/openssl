@@ -379,6 +379,12 @@ int tls13_setup_key_block(SSL_CONNECTION *s)
     int mac_type = NID_undef;
     size_t mac_secret_size = 0;
 
+    if (s->s3.tmp.new_cipher->origin == SSL_CIPHER_ORIGIN_PROVIDER
+        && (SSL_CONNECTION_IS_DTLS(s) || SSL_IS_QUIC_HANDSHAKE(s))) {
+        SSLfatal(s, SSL_AD_ILLEGAL_PARAMETER, SSL_R_BAD_CIPHER);
+        return 0;
+    }
+
     if (!ssl_session_set_cipher(s->session, s->s3.tmp.new_cipher)) {
         SSLfatal_alert(s, SSL_AD_INTERNAL_ERROR);
         return 0;

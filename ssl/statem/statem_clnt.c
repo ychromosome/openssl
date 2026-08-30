@@ -1741,6 +1741,11 @@ static int set_client_ciphersuite(SSL_CONNECTION *s,
         SSLfatal(s, SSL_AD_ILLEGAL_PARAMETER, SSL_R_UNKNOWN_CIPHER_RETURNED);
         return 0;
     }
+    c = ssl_cipher_canon_enabled(s, c);
+    if (c == NULL) {
+        SSLfatal(s, SSL_AD_ILLEGAL_PARAMETER, SSL_R_WRONG_CIPHER_RETURNED);
+        return 0;
+    }
     /*
      * If it is a disabled cipher we either didn't send it in client hello,
      * or it's not allowed for the selected protocol. So we return an error.

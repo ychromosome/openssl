@@ -7,8 +7,6 @@
  * https://www.openssl.org/source/license.html
  */
 
-/* Extended TLS 1.3 ciphersuite capability tests. */
-
 #include <string.h>
 
 #include <openssl/core_names.h>
@@ -17,7 +15,9 @@
 #include <openssl/ssl.h>
 #include "internal/ssl_unwrap.h"
 #include "../ssl/ssl_local.h"
+#include "../ssl/statem/statem_local.h"
 #include "helpers/ssltestlib.h"
+#include "internal/ktls.h"
 #include "testutil.h"
 #include "threadstest.h"
 
@@ -38,7 +38,6 @@ static OSSL_LIB_CTX *libctx;
 static OSSL_PROVIDER *defprov, *tlsprov;
 static char *cert, *privkey, *ecdsacert, *ecdsakey;
 
-/* Suite variants shared by parameterised tests. */
 typedef struct {
     const char *mode;
     const char *provname;
@@ -53,9 +52,6 @@ static const SUITE_VARIANT variants[] = {
     { "valid-sha384", PROV_SHA384_NAME, BUILTIN_SHA384_NAME, PROV_SHA384_CP,
         SHA384_DIGEST_LENGTH }
 };
-
-/* ------------------------------------------------------------------ */
-/* Shared helpers                                                      */
 
 static int nst_written, server_hellos;
 static unsigned char ch_ciphers[512];
@@ -107,12 +103,28 @@ static void reset_counters(void)
 }
 
 static SSL_SESSION *captured_session;
+static SSL_SESSION *captured_server_session;
+static SSL_SESSION *external_cache_session;
 
 static int capture_session_cb(SSL *ssl, SSL_SESSION *sess)
 {
     SSL_SESSION_free(captured_session);
     captured_session = sess;
     return 1;
+}
+
+static int capture_server_session_cb(SSL *ssl, SSL_SESSION *sess)
+{
+    SSL_SESSION_free(captured_server_session);
+    captured_server_session = sess;
+    return 1;
+}
+
+static SSL_SESSION *external_cache_cb(ossl_unused SSL *ssl,
+    ossl_unused const unsigned char *id, ossl_unused int idlen, int *copy)
+{
+    *copy = 1;
+    return external_cache_session;
 }
 
 static int make_pair(const char *mode, const char *sciph, const char *cciph,
@@ -165,9 +177,6 @@ static int check_negotiated(SSL *serverssl, SSL *clientssl, unsigned int cp,
         && exchange_data(clientssl, serverssl, msg, sizeof(msg))
         && exchange_data(serverssl, clientssl, msg, sizeof(msg));
 }
-
-/* ------------------------------------------------------------------ */
-/* 1. Resumption of a built-in session INTO a provider suite           */
 
 static int test_resume_into_provider_suite(int idx)
 {
@@ -252,8 +261,130 @@ end:
     return ret;
 }
 
-/* ------------------------------------------------------------------ */
-/* 2. External PSK whose session carries a provider suite, +/- 0-RTT   */
+static int test_stateful_cache_provider_transition(void)
+{
+    SSL_CTX *sctx = NULL, *cctx = NULL;
+    SSL *serverssl = NULL, *clientssl = NULL;
+    SSL_SESSION *sess = NULL, *replay = NULL, *cached = NULL;
+    char both[128];
+    int ret = 0;
+
+    snprintf(both, sizeof(both), "%s:%s", PROV_SHA256_NAME,
+        BUILTIN_SHA256_NAME);
+    if (!make_pair("valid", BUILTIN_SHA256_NAME, BUILTIN_SHA256_NAME,
+            cert, privkey, &sctx, &cctx))
+        goto end;
+    SSL_CTX_set_options(sctx, SSL_OP_NO_TICKET);
+    SSL_CTX_sess_set_new_cb(sctx, capture_server_session_cb);
+    SSL_CTX_set_session_cache_mode(cctx,
+        SSL_SESS_CACHE_CLIENT | SSL_SESS_CACHE_NO_INTERNAL_STORE);
+    SSL_CTX_sess_set_new_cb(cctx, capture_session_cb);
+    if (!TEST_true(create_ssl_objects(sctx, cctx, &serverssl, &clientssl,
+            NULL, NULL))
+        || !TEST_true(create_ssl_connection(serverssl, clientssl,
+            SSL_ERROR_NONE))
+        || !TEST_ptr(captured_session)
+        || !TEST_ptr(captured_server_session)
+        || !TEST_ptr(replay = SSL_SESSION_dup(captured_session)))
+        goto end;
+    sess = captured_session;
+    captured_session = NULL;
+    cached = captured_server_session;
+    captured_server_session = NULL;
+    if (!TEST_int_eq(cached->cipher->origin, SSL_CIPHER_ORIGIN_STATIC)
+        || !TEST_false(cached->provider_cipher_seen))
+        goto end;
+    shutdown_ssl_connection(serverssl, clientssl);
+    serverssl = clientssl = NULL;
+
+    if (!TEST_true(SSL_CTX_set_ciphersuites(sctx, both))
+        || !TEST_true(SSL_CTX_set_ciphersuites(cctx, both)))
+        goto end;
+    SSL_CTX_set_options(sctx, SSL_OP_SERVER_PREFERENCE);
+    if (!TEST_true(create_ssl_objects(sctx, cctx, &serverssl, &clientssl,
+            NULL, NULL))
+        || !TEST_true(SSL_set_session(clientssl, sess))
+        || !TEST_true(create_ssl_connection(serverssl, clientssl,
+            SSL_ERROR_NONE))
+        || !TEST_true(SSL_session_reused(serverssl))
+        || !TEST_int_eq(SSL_get_current_cipher(serverssl)->origin,
+            SSL_CIPHER_ORIGIN_PROVIDER)
+        || !TEST_int_eq(cached->cipher->origin, SSL_CIPHER_ORIGIN_STATIC)
+        || !TEST_false(cached->provider_cipher_seen))
+        goto end;
+    shutdown_ssl_connection(serverssl, clientssl);
+    serverssl = clientssl = NULL;
+
+    if (!TEST_true(create_ssl_objects(sctx, cctx, &serverssl, &clientssl,
+            NULL, NULL))
+        || !TEST_true(SSL_set_session(clientssl, replay))
+        || !TEST_true(create_ssl_connection(serverssl, clientssl,
+            SSL_ERROR_NONE))
+        || !TEST_true(SSL_session_reused(serverssl))
+        || !TEST_int_eq(SSL_get_current_cipher(serverssl)->origin,
+            SSL_CIPHER_ORIGIN_PROVIDER))
+        goto end;
+
+    ret = 1;
+end:
+    SSL_SESSION_free(cached);
+    SSL_SESSION_free(replay);
+    SSL_SESSION_free(sess);
+    SSL_SESSION_free(captured_session);
+    captured_session = NULL;
+    SSL_SESSION_free(captured_server_session);
+    captured_server_session = NULL;
+    SSL_free(serverssl);
+    SSL_free(clientssl);
+    SSL_CTX_free(sctx);
+    SSL_CTX_free(cctx);
+    ERR_clear_error();
+    tls_provider_set_ciphersuite_mode(NULL);
+    return ret;
+}
+
+static int test_external_cache_rejects_provider_session(void)
+{
+    SSL_CTX *ctx = NULL;
+    SSL *ssl = NULL;
+    SSL_SESSION *marked = NULL, *dup = NULL, *found;
+    const SSL_CIPHER *suite;
+    static const unsigned char id[] = { 1 };
+    int ret = 0;
+
+    tls_provider_set_ciphersuite_mode("valid");
+    if (!TEST_ptr(ctx = SSL_CTX_new_ex(libctx, NULL, TLS_method()))
+        || !TEST_ptr(suite = ssl_provider_ciphersuite_by_name(ctx,
+                         PROV_SHA256_NAME))
+        || !TEST_ptr(marked = SSL_SESSION_new())
+        || !TEST_true(SSL_SESSION_set_cipher(marked, suite))
+        || !TEST_ptr(dup = ssl_session_dup(marked, 0))
+        || !TEST_true(dup->provider_cipher_seen)
+        || !TEST_false(dup->not_resumable)
+        || !TEST_ptr(ssl = SSL_new(ctx)))
+        goto end;
+    external_cache_session = dup;
+    SSL_CTX_set_session_cache_mode(ctx,
+        SSL_SESS_CACHE_SERVER | SSL_SESS_CACHE_NO_INTERNAL_LOOKUP);
+    SSL_CTX_sess_set_get_cb(ctx, external_cache_cb);
+    found = lookup_sess_in_cache(SSL_CONNECTION_FROM_SSL(ssl), id,
+        sizeof(id));
+    if (!TEST_ptr_null(found)) {
+        SSL_SESSION_free(found);
+        goto end;
+    }
+
+    ret = 1;
+end:
+    external_cache_session = NULL;
+    SSL_SESSION_free(dup);
+    SSL_SESSION_free(marked);
+    SSL_free(ssl);
+    SSL_CTX_free(ctx);
+    ERR_clear_error();
+    tls_provider_set_ciphersuite_mode(NULL);
+    return ret;
+}
 
 static SSL_SESSION *clientpsk, *serverpsk;
 static const char pskid[] = "provider-psk-identity";
@@ -399,8 +530,136 @@ end:
     return ret;
 }
 
-/* ------------------------------------------------------------------ */
-/* 3. Stateless HRR with cookie (extensions_srvr.c cookie path)        */
+static int test_provider_psk_nonstream_rejected(void)
+{
+    SSL_CTX *tlsctx = NULL, *dtlsctx = NULL;
+    SSL *tlsssl = NULL, *serverssl = NULL;
+#if !defined(OPENSSL_NO_DTLS) && !defined(OPENSSL_NO_DTLS1_3)
+    SSL *dtlsssl = NULL, *dtlsserverssl = NULL;
+#endif
+    SSL_SESSION *sess = NULL;
+    SSL_CONNECTION *sc;
+    WPACKET wpkt = { 0 };
+    PACKET packet = { 0 };
+    unsigned char early_data_ext[16];
+    unsigned char psk_ext[2 + 2 + sizeof(pskid) - 1 + 4];
+    size_t idlen = sizeof(pskid) - 1;
+    int wpkt_init = 0;
+    int ret = 0;
+
+    tls_provider_set_ciphersuite_mode("valid");
+    if (!TEST_ptr(tlsctx = SSL_CTX_new_ex(libctx, NULL, TLS_method()))
+        || !TEST_true(SSL_CTX_set_ciphersuites(tlsctx, PROV_SHA256_NAME)))
+        goto end;
+    SSL_CTX_set_psk_use_session_callback(tlsctx, use_session_cb);
+    SSL_CTX_set_psk_find_session_callback(tlsctx, find_session_cb);
+    if (!TEST_ptr(tlsssl = SSL_new(tlsctx))
+        || !TEST_ptr(serverssl = SSL_new(tlsctx))
+        || !TEST_ptr(sess = make_provider_psk(tlsssl, &variants[0], 1024)))
+        goto end;
+
+    if (!TEST_true(SSL_SESSION_up_ref(sess)))
+        goto end;
+    clientpsk = sess;
+    if (!TEST_true(SSL_SESSION_up_ref(sess)))
+        goto end;
+    serverpsk = sess;
+
+    SSL_set_connect_state(tlsssl);
+    sc = SSL_CONNECTION_FROM_SSL(tlsssl);
+    sc->s3.flags |= TLS1_FLAGS_QUIC;
+    if (!TEST_false(ssl_session_cipher_is_transport_admissible(sc, sess))
+        || !TEST_true(WPACKET_init_static_len(&wpkt, early_data_ext,
+            sizeof(early_data_ext), 0)))
+        goto end;
+    wpkt_init = 1;
+    ERR_clear_error();
+    if (!TEST_int_eq(tls_construct_ctos_early_data(sc, &wpkt,
+                         SSL_EXT_CLIENT_HELLO, NULL, 0),
+            EXT_RETURN_FAIL)
+        || !TEST_int_eq(ERR_GET_REASON(ERR_peek_error()), SSL_R_BAD_PSK))
+        goto end;
+    WPACKET_cleanup(&wpkt);
+    wpkt_init = 0;
+
+    psk_ext[0] = 0;
+    psk_ext[1] = (unsigned char)(sizeof(psk_ext) - 2);
+    psk_ext[2] = 0;
+    psk_ext[3] = (unsigned char)idlen;
+    memcpy(psk_ext + 4, pskid, idlen);
+    memset(psk_ext + 4 + idlen, 0, 4);
+    SSL_set_accept_state(serverssl);
+    sc = SSL_CONNECTION_FROM_SSL(serverssl);
+    sc->s3.flags |= TLS1_FLAGS_QUIC;
+    sc->ext.psk_kex_mode = TLSEXT_KEX_MODE_FLAG_KE_DHE;
+    if (!TEST_true(PACKET_buf_init(&packet, psk_ext, sizeof(psk_ext))))
+        goto end;
+    ERR_clear_error();
+    if (!TEST_false(tls_parse_ctos_psk(sc, &packet,
+            SSL_EXT_CLIENT_HELLO, NULL, 0))
+        || !TEST_int_eq(ERR_GET_REASON(ERR_peek_error()), SSL_R_BAD_PSK))
+        goto end;
+
+#if !defined(OPENSSL_NO_DTLS) && !defined(OPENSSL_NO_DTLS1_3)
+    if (!TEST_true(SSL_SESSION_set_protocol_version(sess,
+            DTLS1_3_VERSION))
+        || !TEST_ptr(dtlsctx = SSL_CTX_new_ex(libctx, NULL,
+                         DTLS_method())))
+        goto end;
+    SSL_CTX_set_psk_use_session_callback(dtlsctx, use_session_cb);
+    SSL_CTX_set_psk_find_session_callback(dtlsctx, find_session_cb);
+    if (!TEST_ptr(dtlsssl = SSL_new(dtlsctx))
+        || !TEST_ptr(dtlsserverssl = SSL_new(dtlsctx)))
+        goto end;
+
+    SSL_set_connect_state(dtlsssl);
+    sc = SSL_CONNECTION_FROM_SSL(dtlsssl);
+    if (!TEST_false(ssl_session_cipher_is_transport_admissible(sc, sess))
+        || !TEST_true(WPACKET_init_static_len(&wpkt, early_data_ext,
+            sizeof(early_data_ext), 0)))
+        goto end;
+    wpkt_init = 1;
+    ERR_clear_error();
+    if (!TEST_int_eq(tls_construct_ctos_early_data(sc, &wpkt,
+                         SSL_EXT_CLIENT_HELLO, NULL, 0),
+            EXT_RETURN_FAIL)
+        || !TEST_int_eq(ERR_GET_REASON(ERR_peek_error()), SSL_R_BAD_PSK))
+        goto end;
+    WPACKET_cleanup(&wpkt);
+    wpkt_init = 0;
+
+    SSL_set_accept_state(dtlsserverssl);
+    sc = SSL_CONNECTION_FROM_SSL(dtlsserverssl);
+    sc->ext.psk_kex_mode = TLSEXT_KEX_MODE_FLAG_KE_DHE;
+    if (!TEST_true(PACKET_buf_init(&packet, psk_ext, sizeof(psk_ext))))
+        goto end;
+    ERR_clear_error();
+    if (!TEST_false(tls_parse_ctos_psk(sc, &packet,
+            SSL_EXT_CLIENT_HELLO, NULL, 0))
+        || !TEST_int_eq(ERR_GET_REASON(ERR_peek_error()), SSL_R_BAD_PSK))
+        goto end;
+#endif
+
+    ret = 1;
+end:
+    if (wpkt_init)
+        WPACKET_cleanup(&wpkt);
+    SSL_SESSION_free(clientpsk);
+    SSL_SESSION_free(serverpsk);
+    clientpsk = serverpsk = NULL;
+    SSL_SESSION_free(sess);
+    SSL_free(tlsssl);
+    SSL_free(serverssl);
+#if !defined(OPENSSL_NO_DTLS) && !defined(OPENSSL_NO_DTLS1_3)
+    SSL_free(dtlsssl);
+    SSL_free(dtlsserverssl);
+#endif
+    SSL_CTX_free(tlsctx);
+    SSL_CTX_free(dtlsctx);
+    ERR_clear_error();
+    tls_provider_set_ciphersuite_mode(NULL);
+    return ret;
+}
 
 static int gen_cookie_cb(SSL *ssl, unsigned char *cookie, size_t *cookie_len)
 {
@@ -459,9 +718,6 @@ end:
     tls_provider_set_ciphersuite_mode(NULL);
     return ret;
 }
-
-/* ------------------------------------------------------------------ */
-/* 4. Security callback sees the provider suite and can veto it        */
 
 static int sec_min_bits, sec_seen_bits, sec_seen_provider;
 
@@ -526,9 +782,6 @@ end:
     return ret;
 }
 
-/* ------------------------------------------------------------------ */
-/* 5. Preference ordering and wire encoding                            */
-
 static int test_preference_and_wire(int idx)
 {
     int server_pref = idx != 0;
@@ -579,9 +832,6 @@ end:
     return ret;
 }
 
-/* ------------------------------------------------------------------ */
-/* 6. ECDSA server certificate and client authentication               */
-
 static int verify_accept_cb(int ok, X509_STORE_CTX *ctx)
 {
     return 1;
@@ -630,9 +880,6 @@ end:
     return ret;
 }
 
-/* ------------------------------------------------------------------ */
-/* 7. Repeated key updates in both directions, both request types      */
-
 static int test_key_updates(int idx)
 {
     static const unsigned char msg[] = "after key update";
@@ -675,9 +922,6 @@ end:
     tls_provider_set_ciphersuite_mode(NULL);
     return ret;
 }
-
-/* ------------------------------------------------------------------ */
-/* 8. Record padding, odd sizes, middlebox mode, clean shutdown        */
 
 static int test_records_and_shutdown(int idx)
 {
@@ -730,8 +974,127 @@ end:
     return ret;
 }
 
-/* ------------------------------------------------------------------ */
-/* 9. Public accessor semantics for a provider SSL_CIPHER              */
+#define TEST_AEAD_ENCRYPTION_LIMIT 4
+
+static int test_provider_aead_limit_failure(void)
+{
+    static const unsigned char msg[] = "limit";
+    SSL_CTX *sctx = NULL, *cctx = NULL;
+    SSL *serverssl = NULL, *clientssl = NULL;
+    size_t written = 0;
+    int i, write_ret, ret = 0;
+
+    if (!make_pair("valid-limit", PROV_SHA256_NAME, PROV_SHA256_NAME, cert,
+            privkey, &sctx, &cctx)
+        || !TEST_true(create_ssl_objects(sctx, cctx, &serverssl, &clientssl,
+            NULL, NULL))
+        || !TEST_true(create_ssl_connection(serverssl, clientssl,
+            SSL_ERROR_NONE)))
+        goto end;
+
+    for (i = 0; i < TEST_AEAD_ENCRYPTION_LIMIT / 2; i++) {
+        if (!exchange_data(clientssl, serverssl, msg, sizeof(msg)))
+            goto end;
+    }
+
+    if (!TEST_true(SSL_key_update(clientssl, SSL_KEY_UPDATE_NOT_REQUESTED)))
+        goto end;
+
+    for (i = 0; i < TEST_AEAD_ENCRYPTION_LIMIT; i++) {
+        if (!exchange_data(clientssl, serverssl, msg, sizeof(msg)))
+            goto end;
+    }
+
+    write_ret = SSL_write_ex(clientssl, msg, sizeof(msg), &written);
+    if (!TEST_false(write_ret)
+        || !TEST_int_eq(SSL_get_error(clientssl, write_ret), SSL_ERROR_SSL))
+        goto end;
+
+    ret = 1;
+end:
+    SSL_free(serverssl);
+    SSL_free(clientssl);
+    SSL_CTX_free(sctx);
+    SSL_CTX_free(cctx);
+    ERR_clear_error();
+    tls_provider_set_ciphersuite_mode(NULL);
+    return ret;
+}
+
+#if !defined(OPENSSL_NO_SOCK) && !defined(OPENSSL_NO_KTLS)
+static int test_provider_ciphersuite_disables_ktls(void)
+{
+    static const unsigned char msg[] = "provider kTLS exclusion";
+    SSL_CTX *sctx = NULL, *cctx = NULL;
+    SSL *serverssl = NULL, *clientssl = NULL;
+    SSL_CONNECTION *clientsc;
+    int cfd = -1, sfd = -1, ret = 0;
+
+    tls_provider_set_ciphersuite_mode(NULL);
+    if (!TEST_true(create_test_sockets(&cfd, &sfd, SOCK_STREAM, NULL)))
+        goto end;
+    if (!ktls_enable(cfd)) {
+        ret = TEST_skip("Kernel does not support kTLS");
+        goto end;
+    }
+    if (!TEST_true(create_ssl_ctx_pair(libctx, TLS_server_method(),
+            TLS_client_method(), TLS1_3_VERSION, TLS1_3_VERSION,
+            &sctx, &cctx, cert, privkey))
+        || !TEST_true(SSL_CTX_set_ciphersuites(sctx, BUILTIN_SHA256_NAME))
+        || !TEST_true(SSL_CTX_set_ciphersuites(cctx, BUILTIN_SHA256_NAME))
+        || !TEST_true(create_ssl_objects2(sctx, cctx, &serverssl, &clientssl,
+            sfd, cfd))
+        || !TEST_true(SSL_set_options(clientssl, SSL_OP_ENABLE_KTLS))
+        || !TEST_true(create_ssl_connection(serverssl, clientssl,
+            SSL_ERROR_NONE))
+        || !TEST_ptr(clientsc = SSL_CONNECTION_FROM_SSL_ONLY(clientssl)))
+        goto end;
+    if (!BIO_get_ktls_send(clientsc->wbio)) {
+        ret = TEST_skip("Kernel does not offload AES-128-GCM");
+        goto end;
+    }
+
+    SSL_free(serverssl);
+    SSL_free(clientssl);
+    SSL_CTX_free(sctx);
+    SSL_CTX_free(cctx);
+    BIO_closesocket(sfd);
+    BIO_closesocket(cfd);
+    serverssl = clientssl = NULL;
+    sctx = cctx = NULL;
+    sfd = cfd = -1;
+
+    if (!TEST_true(create_test_sockets(&cfd, &sfd, SOCK_STREAM, NULL))
+        || !TEST_true(ktls_enable(cfd))
+        || !make_pair("valid-composed", PROV_SHA256_NAME, PROV_SHA256_NAME,
+            cert, privkey, &sctx, &cctx)
+        || !TEST_true(create_ssl_objects2(sctx, cctx, &serverssl, &clientssl,
+            sfd, cfd))
+        || !TEST_true(SSL_set_options(clientssl, SSL_OP_ENABLE_KTLS))
+        || !TEST_true(create_ssl_connection(serverssl, clientssl,
+            SSL_ERROR_NONE))
+        || !TEST_ptr(clientsc = SSL_CONNECTION_FROM_SSL_ONLY(clientssl))
+        || !TEST_int_eq(SSL_get_current_cipher(clientssl)->origin,
+            SSL_CIPHER_ORIGIN_PROVIDER)
+        || !TEST_false(BIO_get_ktls_send(clientsc->wbio))
+        || !exchange_data(clientssl, serverssl, msg, sizeof(msg)))
+        goto end;
+
+    ret = 1;
+end:
+    SSL_free(serverssl);
+    SSL_free(clientssl);
+    SSL_CTX_free(sctx);
+    SSL_CTX_free(cctx);
+    if (sfd != -1)
+        BIO_closesocket(sfd);
+    if (cfd != -1)
+        BIO_closesocket(cfd);
+    ERR_clear_error();
+    tls_provider_set_ciphersuite_mode(NULL);
+    return ret;
+}
+#endif
 
 static int stack_has_name(STACK_OF(SSL_CIPHER) *sk, const char *name)
 {
@@ -825,9 +1188,6 @@ end:
     return ret;
 }
 
-/* ------------------------------------------------------------------ */
-/* 10. Selection by SSL_CONF, case-insensitively, per-SSL              */
-
 static int test_conf_and_case(void)
 {
     SSL_CTX *sctx = NULL, *cctx = NULL;
@@ -870,9 +1230,6 @@ end:
     tls_provider_set_ciphersuite_mode(NULL);
     return ret;
 }
-
-/* ------------------------------------------------------------------ */
-/* 11. Descriptor lifetime: session outlives SSL and SSL_CTX           */
 
 static int test_session_outlives_ctx(void)
 {
@@ -928,14 +1285,13 @@ end:
 
 /*
  * d2i_SSL_SESSION() into an existing session that holds a provider suite
- * must release that reference and fully replace the logical session state.
- * (Review finding F-09.)
+ * must release that reference without clearing unrelated non-resumable state.
  */
 static int test_d2i_into_provider_session(void)
 {
     SSL_CTX *sctx = NULL, *cctx = NULL;
     SSL *serverssl = NULL, *clientssl = NULL;
-    SSL_SESSION *prov = NULL, *builtin = NULL;
+    SSL_SESSION *prov = NULL, *builtin = NULL, *reuse = NULL;
     unsigned char *der = NULL;
     const unsigned char *p;
     int derlen, ret = 0;
@@ -970,8 +1326,18 @@ static int test_d2i_into_provider_session(void)
         || !TEST_int_eq(SSL_SESSION_get0_cipher(prov)->origin,
             SSL_CIPHER_ORIGIN_STATIC)
         || !TEST_false(prov->provider_cipher_seen)
-        || !TEST_false(prov->not_resumable)
-        || !TEST_true(SSL_SESSION_is_resumable(prov)))
+        || !TEST_true(prov->not_resumable)
+        || !TEST_false(SSL_SESSION_is_resumable(prov))
+        || !TEST_ptr(reuse = SSL_SESSION_dup(builtin)))
+        goto end;
+
+    reuse->not_resumable = 1;
+    p = der;
+    if (!TEST_ptr_eq(d2i_SSL_SESSION_ex(&reuse, &p, derlen, libctx, NULL),
+            reuse)
+        || !TEST_false(reuse->provider_cipher_seen)
+        || !TEST_true(reuse->not_resumable)
+        || !TEST_false(SSL_SESSION_is_resumable(reuse)))
         goto end;
 
     ret = 1;
@@ -979,6 +1345,7 @@ end:
     OPENSSL_free(der);
     SSL_SESSION_free(prov);
     SSL_SESSION_free(builtin);
+    SSL_SESSION_free(reuse);
     SSL_free(serverssl);
     SSL_free(clientssl);
     SSL_CTX_free(sctx);
@@ -987,9 +1354,6 @@ end:
     tls_provider_set_ciphersuite_mode(NULL);
     return ret;
 }
-
-/* ------------------------------------------------------------------ */
-/* 12. Two providers advertising the same descriptor                   */
 
 static int test_multiple_providers_collide(void)
 {
@@ -1031,9 +1395,6 @@ end:
     return ret;
 }
 
-/* ------------------------------------------------------------------ */
-/* 13. Concurrent handshakes sharing one SSL_CTX pair                  */
-
 #define THREAD_COUNT 8
 #define HANDSHAKES_PER_THREAD 6
 
@@ -1064,7 +1425,7 @@ static void thread_worker(void)
         CRYPTO_atomic_add(&th_failures, 1, &tmp, th_lock);
 }
 
-static int test_concurrent_handshakes(void)
+static int test_concurrent_handshakes_prebuilt_contexts(void)
 {
     thread_t threads[THREAD_COUNT];
     int i, started = 0, ret = 0;
@@ -1096,33 +1457,118 @@ end:
     return ret;
 }
 
-static int test_provider_reload_lifecycle(void)
+static int test_provider_discovery_reload_lifecycle(void)
 {
     OSSL_LIB_CTX *ctx = NULL;
-    OSSL_PROVIDER *provider = NULL;
+    OSSL_PROVIDER *local_default = NULL, *provider = NULL;
+    SSL_CTX *sslctx = NULL;
     int i, ret = 0;
 
+    tls_provider_set_ciphersuite_mode("valid");
     for (i = 0; i < 64; i++) {
         if (!TEST_ptr(ctx = OSSL_LIB_CTX_new())
             || !TEST_true(OSSL_PROVIDER_add_builtin(ctx, "tls-provider-reload",
                 tls_provider_init))
+            || !TEST_ptr(local_default = OSSL_PROVIDER_load(ctx, "default"))
             || !TEST_ptr(provider = OSSL_PROVIDER_load(ctx,
-                             "tls-provider-reload")))
+                             "tls-provider-reload"))
+            || !TEST_ptr(sslctx = SSL_CTX_new_ex(ctx, NULL, TLS_method()))
+            || !TEST_int_eq(sk_SSL_CIPHER_num(
+                                sslctx->provider_ciphersuites),
+                1))
             goto end;
         OSSL_PROVIDER_unload(provider);
         provider = NULL;
+        if (!TEST_true(SSL_CTX_set_ciphersuites(sslctx, PROV_SHA256_NAME)))
+            goto end;
+        SSL_CTX_free(sslctx);
+        sslctx = NULL;
+        OSSL_PROVIDER_unload(local_default);
+        local_default = NULL;
         OSSL_LIB_CTX_free(ctx);
         ctx = NULL;
     }
     ret = 1;
 end:
+    SSL_CTX_free(sslctx);
     OSSL_PROVIDER_unload(provider);
+    OSSL_PROVIDER_unload(local_default);
     OSSL_LIB_CTX_free(ctx);
     ERR_clear_error();
+    tls_provider_set_ciphersuite_mode(NULL);
     return ret;
 }
 
-/* ------------------------------------------------------------------ */
+#define RELOADS_PER_THREAD 32
+
+static CRYPTO_RWLOCK *reload_lock;
+static int reload_failures;
+
+static void provider_discovery_reload_worker(void)
+{
+    OSSL_LIB_CTX *ctx = NULL;
+    OSSL_PROVIDER *local_default = NULL, *provider = NULL;
+    SSL_CTX *sslctx = NULL;
+    int i, ok = 1, tmp;
+
+    for (i = 0; ok && i < RELOADS_PER_THREAD; i++) {
+        ok = (ctx = OSSL_LIB_CTX_new()) != NULL
+            && OSSL_PROVIDER_add_builtin(ctx, "tls-provider-reload-thread",
+                tls_provider_init)
+            && (local_default = OSSL_PROVIDER_load(ctx, "default")) != NULL
+            && (provider = OSSL_PROVIDER_load(ctx,
+                    "tls-provider-reload-thread"))
+                != NULL
+            && (sslctx = SSL_CTX_new_ex(ctx, NULL, TLS_method())) != NULL
+            && sk_SSL_CIPHER_num(sslctx->provider_ciphersuites) == 1;
+        OSSL_PROVIDER_unload(provider);
+        provider = NULL;
+        if (ok)
+            ok = SSL_CTX_set_ciphersuites(sslctx, PROV_SHA256_NAME);
+        SSL_CTX_free(sslctx);
+        sslctx = NULL;
+        OSSL_PROVIDER_unload(local_default);
+        local_default = NULL;
+        OSSL_LIB_CTX_free(ctx);
+        ctx = NULL;
+    }
+    SSL_CTX_free(sslctx);
+    OSSL_PROVIDER_unload(provider);
+    OSSL_PROVIDER_unload(local_default);
+    OSSL_LIB_CTX_free(ctx);
+    if (!ok)
+        CRYPTO_atomic_add(&reload_failures, 1, &tmp, reload_lock);
+}
+
+static int test_concurrent_provider_discovery_reload(void)
+{
+    thread_t threads[THREAD_COUNT];
+    int i, started = 0, ret = 0;
+
+    reload_failures = 0;
+    tls_provider_set_ciphersuite_mode("valid");
+    if (!TEST_ptr(reload_lock = CRYPTO_THREAD_lock_new()))
+        goto end;
+    for (i = 0; i < THREAD_COUNT; i++) {
+        if (!TEST_true(run_thread(&threads[i],
+                provider_discovery_reload_worker)))
+            break;
+        started++;
+    }
+    for (i = 0; i < started; i++)
+        (void)wait_for_thread(threads[i]);
+    if (!TEST_int_eq(started, THREAD_COUNT)
+        || !TEST_int_eq(reload_failures, 0))
+        goto end;
+
+    ret = 1;
+end:
+    CRYPTO_THREAD_lock_free(reload_lock);
+    reload_lock = NULL;
+    ERR_clear_error();
+    tls_provider_set_ciphersuite_mode(NULL);
+    return ret;
+}
 
 OPT_TEST_DECLARE_USAGE("certfile privkeyfile ecdsacertfile ecdsakeyfile\n")
 
@@ -1143,22 +1589,30 @@ int setup_tests(void)
         return 0;
 
     ADD_ALL_TESTS(test_resume_into_provider_suite, 4);
+    ADD_TEST(test_stateful_cache_provider_transition);
+    ADD_TEST(test_external_cache_rejects_provider_session);
     ADD_ALL_TESTS(test_external_psk_provider, 4);
+    ADD_TEST(test_provider_psk_nonstream_rejected);
     ADD_ALL_TESTS(test_stateless_cookie, 2);
     ADD_ALL_TESTS(test_security_callback, 4);
     ADD_ALL_TESTS(test_preference_and_wire, 2);
     ADD_ALL_TESTS(test_ecdsa_and_client_auth, 2);
     ADD_ALL_TESTS(test_key_updates, 2);
     ADD_ALL_TESTS(test_records_and_shutdown, 2);
+    ADD_TEST(test_provider_aead_limit_failure);
+#if !defined(OPENSSL_NO_SOCK) && !defined(OPENSSL_NO_KTLS)
+    ADD_TEST(test_provider_ciphersuite_disables_ktls);
+#endif
     ADD_TEST(test_public_accessors);
     ADD_TEST(test_provider_standard_name_is_null);
     ADD_TEST(test_conf_and_case);
     ADD_TEST(test_session_outlives_ctx);
     ADD_TEST(test_d2i_into_provider_session);
     ADD_TEST(test_multiple_providers_collide);
-    ADD_TEST(test_concurrent_handshakes);
+    ADD_TEST(test_concurrent_handshakes_prebuilt_contexts);
+    ADD_TEST(test_concurrent_provider_discovery_reload);
     /* Keep last: tls-provider.c uses process-global test capability data. */
-    ADD_TEST(test_provider_reload_lifecycle);
+    ADD_TEST(test_provider_discovery_reload_lifecycle);
     return 1;
 }
 
