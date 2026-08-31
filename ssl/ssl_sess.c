@@ -144,30 +144,12 @@ int ssl_session_set_cipher(SSL_SESSION *session, const SSL_CIPHER *cipher)
     return 1;
 }
 
-int ssl_session_cipher_is_transport_admissible(const SSL_CONNECTION *s,
-    const SSL_SESSION *session)
+int ssl_session_is_external_psk_admissible(const SSL_SESSION *session)
 {
     return session == NULL
-        || (!SSL_CONNECTION_IS_DTLS(s) && !SSL_IS_QUIC_HANDSHAKE(s))
-        || !session->provider_cipher_seen;
-}
-
-int ssl_session_cipher_is_early_data_admissible(const SSL_CONNECTION *s,
-    const SSL_SESSION *session)
-{
-    const SSL_CIPHER *canonical;
-    int op;
-
-    if (session == NULL || session->cipher == NULL
-        || session->cipher->origin != SSL_CIPHER_ORIGIN_PROVIDER)
-        return 1;
-
-    canonical = ssl_cipher_canon_enabled(s, session->cipher);
-    if (canonical == NULL)
-        return 0;
-    op = s->server ? SSL_SECOP_CIPHER_SHARED : SSL_SECOP_CIPHER_SUPPORTED;
-    return ssl_security(s, op, canonical->strength_bits, 0,
-        (void *)canonical);
+        || (!session->provider_cipher_seen
+            && (session->cipher == NULL
+                || session->cipher->origin != SSL_CIPHER_ORIGIN_PROVIDER));
 }
 
 /*
