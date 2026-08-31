@@ -5135,13 +5135,11 @@ void ssl_update_cache(SSL_CONNECTION *s, int mode)
     int i;
 
     /*
-     * Sessions without an id and sessions marked not_resumable are normally
-     * neither stored nor reported. Provider-cipher sessions proceed only to
-     * the notification callback; the internal-store gate below excludes them.
+     * If the session_id_length is 0, we are not supposed to cache it, and it
+     * would be rather hard to do anyway :-). Also if the session has already
+     * been marked as not_resumable we should not cache it for later reuse.
      */
-    if ((s->session->session_id_length == 0
-            || s->session->not_resumable)
-        && !s->session->provider_cipher_seen)
+    if (s->session->session_id_length == 0 || s->session->not_resumable)
         return;
 
     /*

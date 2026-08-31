@@ -113,9 +113,9 @@ version does not support provider-backed external PSK or 0-RTT.
 Public `SSL_CIPHER` pointers are borrowed. Values returned by
 `SSL_CIPHER_find()`, `SSL_get1_supported_ciphers()` and
 `SSL_bytes_to_cipher_list()` remain valid only while the originating `SSL`
-exists. `SSL_SESSION_set_cipher()` retains a provider descriptor.
-`SSL_SESSION_get0_cipher()` remains valid until the session is freed, its
+exists. `SSL_SESSION_get0_cipher()` remains valid until the session is freed, its
 cipher is replaced, or an in-place session decode succeeds.
+`SSL_SESSION_set_cipher()` rejects provider descriptors.
 
 Deferred work
 -------------

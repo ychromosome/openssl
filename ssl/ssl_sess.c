@@ -554,7 +554,7 @@ SSL_SESSION *lookup_sess_in_cache(SSL_CONNECTION *s,
             }
         }
         CRYPTO_THREAD_unlock(s->session_ctx->lock);
-        if (ret != NULL && (ret->not_resumable || ret->provider_cipher_seen)) {
+        if (ret != NULL && ret->provider_cipher_seen) {
             SSL_SESSION_free(ret);
             ret = NULL;
         }
@@ -1128,6 +1128,11 @@ const SSL_CIPHER *SSL_SESSION_get0_cipher(const SSL_SESSION *s)
 
 int SSL_SESSION_set_cipher(SSL_SESSION *s, const SSL_CIPHER *cipher)
 {
+    if (cipher != NULL && cipher->origin == SSL_CIPHER_ORIGIN_PROVIDER) {
+        ERR_raise(ERR_LIB_SSL,
+            SSL_R_PROVIDER_CIPHERSUITE_SESSION_UNSUPPORTED);
+        return 0;
+    }
     return ssl_session_set_cipher(s, cipher);
 }
 

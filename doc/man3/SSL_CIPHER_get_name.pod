@@ -107,8 +107,7 @@ L<SSL_client_hello_get0_ciphers(3)>.  SSL_CIPHER_find() returns NULL if an
 error occurs or the indicated cipher is not found. It searches built-in and
 provider-defined ciphersuites associated with B<ssl>.
 The returned object is borrowed. For a provider-defined ciphersuite it remains
-valid only while B<ssl> remains alive, unless retained by
-SSL_SESSION_set_cipher().
+valid only while B<ssl> remains alive.
 
 SSL_CIPHER_get_id() returns the OpenSSL-specific ID of the given cipher B<c>. That ID is
 not the same as the IANA-specific ID.
