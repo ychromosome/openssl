@@ -69,9 +69,9 @@ OpenSSL 4.1
    cached, serialised or ticketed:
    SSL_SESSION_is_resumable() returns 0, and SSL_CTX_add_session(),
    SSL_set_session(), i2d_SSL_SESSION() and SSL_new_session_ticket() fail.
-   SSL_SESSION_set_cipher() may also fail when retaining a provider-defined
-   ciphersuite. External-PSK callbacks reject such sessions; provider-backed
-   external PSK and 0-RTT are not supported. Libssl permits at most 2^24
+   SSL_SESSION_set_cipher() rejects provider-defined ciphersuites.
+   External-PSK callbacks reject such sessions; provider-backed external PSK
+   and 0-RTT are not supported. Libssl permits at most 2^24
    encrypted records per provider-suite traffic key. Provider AEADs must refuse
    encryption earlier when their algorithm-specific limit is lower. Provider
    suites do not use kTLS. Each SSL_CTX accepts at most 128 provider suites;

@@ -361,7 +361,7 @@ static int test_external_cache_rejects_provider_session(void)
         || !TEST_ptr(suite = ssl_provider_ciphersuite_by_name(ctx,
                          PROV_SHA256_NAME))
         || !TEST_ptr(marked = SSL_SESSION_new())
-        || !TEST_true(SSL_SESSION_set_cipher(marked, suite))
+        || !TEST_true(ssl_session_set_cipher(marked, suite))
         || !TEST_ptr(dup = ssl_session_dup(marked, 0))
         || !TEST_true(dup->provider_cipher_seen)
         || !TEST_false(dup->not_resumable)
@@ -383,6 +383,59 @@ end:
     external_cache_session = NULL;
     SSL_SESSION_free(dup);
     SSL_SESSION_free(marked);
+    SSL_free(ssl);
+    SSL_CTX_free(ctx);
+    ERR_clear_error();
+    tls_provider_set_ciphersuite_mode(NULL);
+    return ret;
+}
+
+static int test_public_provider_cipher_assignment_rejected(void)
+{
+    static const unsigned char builtin_id[] = { 0x13, 0x01 };
+    static const unsigned char session_id[] = { 0x51 };
+    SSL_CTX *ctx = NULL;
+    SSL *ssl = NULL;
+    SSL_SESSION *session = NULL;
+    const SSL_CIPHER *suite, *builtin;
+    unsigned long err;
+    int ret = 0;
+
+    tls_provider_set_ciphersuite_mode("valid");
+    if (!TEST_ptr(ctx = SSL_CTX_new_ex(libctx, NULL, TLS_method()))
+        || !TEST_ptr(ssl = SSL_new(ctx))
+        || !TEST_ptr(suite = ssl_provider_ciphersuite_by_name(ctx,
+                         PROV_SHA256_NAME))
+        || !TEST_ptr(builtin = SSL_CIPHER_find(ssl, builtin_id))
+        || !TEST_ptr(session = SSL_SESSION_new())
+        || !TEST_true(SSL_SESSION_set_cipher(session, builtin))
+        || !TEST_true(SSL_SESSION_set_protocol_version(session,
+            TLS1_3_VERSION))
+        || !TEST_true(SSL_SESSION_set1_id(session, session_id,
+            sizeof(session_id)))
+        || !TEST_true(SSL_CTX_add_session(ctx, session))
+        || !TEST_long_eq(SSL_CTX_sess_number(ctx), 1)
+        || !TEST_true(SSL_SESSION_is_resumable(session)))
+        goto end;
+
+    ERR_clear_error();
+    if (!TEST_false(SSL_SESSION_set_cipher(session, suite)))
+        goto end;
+    err = ERR_peek_last_error();
+    if (!TEST_int_eq(ERR_GET_LIB(err), ERR_LIB_SSL)
+        || !TEST_int_eq(ERR_GET_REASON(err),
+            SSL_R_PROVIDER_CIPHERSUITE_SESSION_UNSUPPORTED)
+        || !TEST_ptr_eq(SSL_SESSION_get0_cipher(session), builtin)
+        || !TEST_false(session->provider_cipher_seen)
+        || !TEST_true(SSL_SESSION_is_resumable(session))
+        || !TEST_long_eq(SSL_CTX_sess_number(ctx), 1))
+        goto end;
+
+    ret = 1;
+end:
+    if (ctx != NULL && session != NULL)
+        SSL_CTX_remove_session(ctx, session);
+    SSL_SESSION_free(session);
     SSL_free(ssl);
     SSL_CTX_free(ctx);
     ERR_clear_error();
@@ -431,11 +484,19 @@ static SSL_SESSION *make_psk(SSL *ssl, unsigned int codepoint, size_t mdsize,
         (unsigned char)codepoint };
     const SSL_CIPHER *cipher = SSL_CIPHER_find(ssl, wire);
     SSL_SESSION *sess = SSL_SESSION_new();
+    int cipher_set;
 
-    if (!TEST_ptr(cipher) || !TEST_ptr(sess)
-        || !TEST_int_eq(cipher->origin, origin)
+    if (!TEST_ptr(cipher) || !TEST_ptr(sess)) {
+        SSL_SESSION_free(sess);
+        return NULL;
+    }
+    cipher_set = origin == SSL_CIPHER_ORIGIN_PROVIDER
+        ? ssl_session_set_cipher(sess, cipher)
+        : SSL_SESSION_set_cipher(sess, cipher);
+
+    if (!TEST_int_eq(cipher->origin, origin)
         || !TEST_true(SSL_SESSION_set1_master_key(sess, key, mdsize))
-        || !TEST_true(SSL_SESSION_set_cipher(sess, cipher))
+        || !TEST_true(cipher_set)
         || !TEST_true(SSL_SESSION_set_protocol_version(sess, TLS1_3_VERSION))
         || !TEST_true(SSL_SESSION_set_max_early_data(sess, max_early))) {
         SSL_SESSION_free(sess);
@@ -1569,6 +1630,7 @@ int setup_tests(void)
     ADD_ALL_TESTS(test_resume_into_provider_suite, 4);
     ADD_TEST(test_stateful_cache_provider_transition);
     ADD_TEST(test_external_cache_rejects_provider_session);
+    ADD_TEST(test_public_provider_cipher_assignment_rejected);
     ADD_ALL_TESTS(test_provider_external_psk_rejected, 2);
     ADD_ALL_TESTS(test_stateless_cookie, 2);
     ADD_ALL_TESTS(test_security_callback, 4);
