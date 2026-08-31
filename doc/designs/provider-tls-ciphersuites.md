@@ -108,7 +108,11 @@ provider-cipher and external-PSK markers but preserves any existing
 descriptor valid.
 
 External-PSK callbacks reject a session that has held a provider suite. This
-version does not support provider-backed external PSK or 0-RTT.
+version does not support provider-backed external PSK or 0-RTT. A selected
+provider suite accepts neither tickets nor external PSKs, including built-in
+sessions with a compatible transcript digest. The server ignores such PSK
+offers and continues with a full handshake. The client rejects a server that
+selects a PSK together with a provider suite.
 
 Public `SSL_CIPHER` pointers are borrowed. Values returned by
 `SSL_CIPHER_find()`, `SSL_get1_supported_ciphers()` and
