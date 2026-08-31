@@ -229,6 +229,13 @@ struct provider_ctx_data_st {
     OSSL_PROVIDER *provider;
 };
 
+struct provider_group_data_st {
+    SSL_CTX *ctx;
+    OSSL_PROVIDER *provider;
+    size_t callbacks_seen;
+    int callback_failed;
+};
+
 #ifndef OPENSSL_NO_TLS1_3
 #define TLS_CIPHERSUITE_NAME_MAX_LEN 255
 #define TLS_CIPHERSUITE_ALGORITHM_NAME_MAX_LEN 255
@@ -260,20 +267,33 @@ static int tls_ciphersuite_get_string_param(const OSSL_PARAM params[],
     const char *key, char *value, size_t value_size)
 {
     const OSSL_PARAM *p = OSSL_PARAM_locate_const(params, key);
-    char *target = value;
+    const unsigned char *source, *nul;
     size_t len;
 
+    if (value_size == 0)
+        return 0;
+    value[0] = '\0';
+
     if (p == NULL || p->data_type != OSSL_PARAM_UTF8_STRING
-        || p->data == NULL || p->data_size == 0 || value_size == 0
+        || p->data == NULL || p->data_size == 0
         || p->data_size > value_size)
         return 0;
 
-    if (!OSSL_PARAM_get_utf8_string(p, &target, value_size))
+    source = p->data;
+    nul = memchr(source, '\0', p->data_size);
+    if (nul == NULL) {
+        len = p->data_size;
+    } else {
+        len = (size_t)(nul - source);
+        if (len + 1 != p->data_size)
+            return 0;
+    }
+    if (len == 0 || len >= value_size)
         return 0;
 
-    len = strlen(value);
-    return len != 0
-        && (p->data_size == len || p->data_size == len + 1);
+    memcpy(value, source, len);
+    value[len] = '\0';
+    return 1;
 }
 
 static int tls_ciphersuite_get_uint_param(const OSSL_PARAM params[],
@@ -597,7 +617,7 @@ int ssl_load_provider_ciphersuites(SSL_CTX *ctx)
 static OSSL_CALLBACK add_provider_groups;
 static int add_provider_groups(const OSSL_PARAM params[], void *data)
 {
-    struct provider_ctx_data_st *pgd = data;
+    struct provider_group_data_st *pgd = data;
     SSL_CTX *ctx = pgd->ctx;
     const OSSL_PARAM *p;
     TLS_GROUP_INFO *ginf = NULL;
@@ -605,6 +625,8 @@ static int add_provider_groups(const OSSL_PARAM params[], void *data)
     unsigned int gid;
     unsigned int is_kem = 0;
     int ret = 0;
+
+    pgd->callbacks_seen++;
 
     if (ctx->group_list_max_len == ctx->group_list_len) {
         TLS_GROUP_INFO *tmp = NULL;
@@ -724,6 +746,8 @@ static int add_provider_groups(const OSSL_PARAM params[], void *data)
     }
     ERR_pop_to_mark();
 err:
+    if (ret == 0)
+        pgd->callback_failed = 1;
     if (ginf != NULL) {
         OPENSSL_free(ginf->tlsname);
         OPENSSL_free(ginf->realname);
@@ -735,12 +759,23 @@ err:
 
 static int discover_provider_groups(OSSL_PROVIDER *provider, void *vctx)
 {
-    struct provider_ctx_data_st pgd;
+    struct provider_group_data_st pgd;
+    int ret;
 
+    memset(&pgd, 0, sizeof(pgd));
     pgd.ctx = vctx;
     pgd.provider = provider;
-    return OSSL_PROVIDER_get_capabilities(provider, "TLS-GROUP",
+    ret = OSSL_PROVIDER_get_capabilities(provider, "TLS-GROUP",
         add_provider_groups, &pgd);
+    if (pgd.callback_failed)
+        return 0;
+    if (pgd.callbacks_seen != 0 && ret == 0) {
+        ERR_raise_data(ERR_LIB_SSL, ERR_R_SSL_LIB,
+            "provider=%s aborted TLS-GROUP enumeration",
+            OSSL_PROVIDER_get0_name(provider));
+        return 0;
+    }
+    return 1;
 }
 
 int ssl_load_groups(SSL_CTX *ctx)
