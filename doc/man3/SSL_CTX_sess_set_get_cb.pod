@@ -79,10 +79,6 @@ In TLSv1.3 it is recommended that each SSL_SESSION object is only used for
 resumption once. One way of enforcing that is for applications to call
 L<SSL_CTX_remove_session(3)> after a session has been used.
 
-For a session that has used a provider-defined ciphersuite,
-new_session_cb() is informational. The session remains non-resumable,
-non-cacheable, non-serialisable, and ticket-free.
-
 The remove_session_cb() is called whenever the SSL engine removes a session
 from the internal cache. This can happen when the session is removed because
 it is expired or when a connection was not shutdown cleanly. It also happens
