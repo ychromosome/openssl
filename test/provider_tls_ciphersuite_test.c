@@ -16,6 +16,7 @@
 #include <openssl/ssl.h>
 #include "internal/ssl_unwrap.h"
 #include "../ssl/ssl_local.h"
+#include "../ssl/record/methods/recmethod_local.h"
 #include "helpers/ssltestlib.h"
 #include "testutil.h"
 
@@ -96,7 +97,8 @@ static const CIPHERSUITE_TEST ciphersuite_tests[] = {
     { "duplicate-codepoint", 0, 0 },
     { "duplicate-name", 0, 0 },
     { "valid-then-invalid", 0, 0 },
-    { "valid-then-abort", 0, 0 }
+    { "valid-then-abort", 0, 0 },
+    { "too-many", 0, 0 }
 };
 
 static OSSL_LIB_CTX *libctx;
@@ -333,6 +335,12 @@ typedef struct {
     int ignore_failure;
 } LATE_SWITCH_DATA;
 
+typedef struct {
+    SSL_CTX *nested;
+    int calls;
+    int nested_failed;
+} REENTRANT_SWITCH_DATA;
+
 static int sni_switch_cb(SSL *ssl, int *alert, void *arg)
 {
     SNI_SWITCH_DATA *data = arg;
@@ -410,6 +418,20 @@ static int reject_provider_client_security_cb(const SSL *ssl,
         && cipher->origin == SSL_CIPHER_ORIGIN_PROVIDER)
         return 0;
     return 1;
+}
+
+static int reentrant_reject_security_cb(const SSL *ssl, const SSL_CTX *ctx,
+    int op, int bits, int nid, void *other, void *ex)
+{
+    REENTRANT_SWITCH_DATA *data = ex;
+    const SSL_CIPHER *cipher = other;
+
+    if (ssl == NULL || op != SSL_SECOP_CIPHER_CHECK || cipher == NULL
+        || cipher->origin != SSL_CIPHER_ORIGIN_PROVIDER)
+        return 1;
+    data->calls++;
+    data->nested_failed = SSL_set_SSL_CTX((SSL *)ssl, data->nested) == NULL;
+    return 0;
 }
 
 static int check_valid_suite(const SSL_CIPHER *suite, int index,
@@ -583,6 +605,42 @@ end:
     return ret;
 }
 
+static int test_provider_peer_list_deduplication(void)
+{
+    static const unsigned char suites[] = {
+        0xff, 0xa0, 0xff, 0xa0, 0xff, 0xa0,
+        0x13, 0x01, 0x13, 0x01
+    };
+    SSL_CTX *ctx = NULL;
+    SSL *ssl = NULL;
+    STACK_OF(SSL_CIPHER) *ciphers = NULL, *scsvs = NULL;
+    int ret = 0;
+
+    tls_provider_set_ciphersuite_mode("valid");
+    if (!TEST_ptr(ctx = SSL_CTX_new_ex(libctx, NULL, TLS_method()))
+        || !TEST_ptr(ssl = SSL_new(ctx))
+        || !TEST_true(SSL_bytes_to_cipher_list(ssl, suites, sizeof(suites),
+            0, &ciphers, &scsvs))
+        || !TEST_int_eq(sk_SSL_CIPHER_num(ciphers), 3)
+        || !TEST_int_eq(sk_SSL_CIPHER_value(ciphers, 0)->origin,
+            SSL_CIPHER_ORIGIN_PROVIDER)
+        || !TEST_int_eq(sk_SSL_CIPHER_value(ciphers, 1)->origin,
+            SSL_CIPHER_ORIGIN_STATIC)
+        || !TEST_ptr_eq(sk_SSL_CIPHER_value(ciphers, 1),
+            sk_SSL_CIPHER_value(ciphers, 2)))
+        goto end;
+
+    ret = 1;
+end:
+    sk_SSL_CIPHER_free(ciphers);
+    sk_SSL_CIPHER_free(scsvs);
+    SSL_free(ssl);
+    SSL_CTX_free(ctx);
+    ERR_clear_error();
+    tls_provider_set_ciphersuite_mode(NULL);
+    return ret;
+}
+
 static int test_provider_composition(void)
 {
     static const unsigned char message[] = "provider composition";
@@ -656,6 +714,78 @@ end:
     return ret;
 }
 
+static int test_provider_record_limit(void)
+{
+    static const unsigned char message[] = "provider record limit";
+    SSL_CTX *sctx = NULL, *cctx = NULL;
+    SSL *serverssl = NULL, *clientssl = NULL;
+    SSL_CONNECTION *clientsc;
+    const SSL_CIPHER *builtin = NULL;
+    size_t written = 0;
+    unsigned long err;
+    int found = 0, ret = 0;
+
+    tls_provider_set_ciphersuite_mode("valid");
+    if (!TEST_true(create_ssl_ctx_pair(libctx, TLS_server_method(),
+            TLS_client_method(), TLS1_3_VERSION, TLS1_3_VERSION,
+            &sctx, &cctx, cert, privkey))
+        || !TEST_true(SSL_CTX_set_num_tickets(sctx, 0))
+        || !TEST_true(SSL_CTX_set_ciphersuites(sctx,
+            TLS_TEST_SHA256_NAME))
+        || !TEST_true(SSL_CTX_set_ciphersuites(cctx,
+            TLS_TEST_SHA256_NAME))
+        || !TEST_true(create_ssl_objects(sctx, cctx, &serverssl, &clientssl,
+            NULL, NULL))
+        || !TEST_true(create_ssl_connection(serverssl, clientssl,
+            SSL_ERROR_NONE))
+        || !TEST_ptr(clientsc = SSL_CONNECTION_FROM_SSL_ONLY(clientssl))
+        || !TEST_ptr(builtin = SSL_CIPHER_find(clientssl,
+                         (const unsigned char[]) { 0x13, 0x01 }))
+        || !TEST_true(SSL_SESSION_set_cipher(clientsc->session, builtin))
+        || !TEST_true(clientsc->session->provider_cipher_seen)
+        || !TEST_ptr(clientsc->rlayer.wrl))
+        goto end;
+    clientsc->rlayer.wrl->sequence = TLS13_PROVIDER_RECORD_LIMIT - 2;
+    if (!TEST_true(SSL_key_update(clientssl, SSL_KEY_UPDATE_NOT_REQUESTED))
+        || !TEST_true(SSL_write_ex(clientssl, message, sizeof(message),
+            &written))
+        || !TEST_size_t_eq(written, sizeof(message))
+        || !TEST_uint64_t_lt(clientsc->rlayer.wrl->sequence,
+            TLS13_PROVIDER_RECORD_LIMIT))
+        goto end;
+
+    written = 0;
+    clientsc->rlayer.wrl->sequence = TLS13_PROVIDER_RECORD_LIMIT - 1;
+    if (!TEST_true(SSL_write_ex(clientssl, message, sizeof(message),
+            &written))
+        || !TEST_size_t_eq(written, sizeof(message)))
+        goto end;
+
+    written = 0;
+    ERR_clear_error();
+    if (!TEST_false(SSL_write_ex(clientssl, message, sizeof(message),
+            &written)))
+        goto end;
+    while ((err = ERR_get_error()) != 0) {
+        if (ERR_GET_REASON(err) == SSL_R_TOO_MANY_RECORDS) {
+            found = 1;
+            break;
+        }
+    }
+    if (!TEST_true(found))
+        goto end;
+
+    ret = 1;
+end:
+    SSL_free(serverssl);
+    SSL_free(clientssl);
+    SSL_CTX_free(sctx);
+    SSL_CTX_free(cctx);
+    ERR_clear_error();
+    tls_provider_set_ciphersuite_mode(NULL);
+    return ret;
+}
+
 static int test_provider_discovery_mfail(void)
 {
     SSL_CTX *ctx;
@@ -669,6 +799,51 @@ static int test_provider_discovery_mfail(void)
     if (ctx != NULL
         && sk_SSL_CIPHER_num(ctx->provider_ciphersuites) == 1)
         ret = 1;
+    SSL_CTX_free(ctx);
+    ERR_clear_error();
+    tls_provider_set_ciphersuite_mode(NULL);
+    return ret;
+}
+
+static int test_ssl_ciphersuites_mfail(void)
+{
+    SSL_CTX *ctx = NULL;
+    SSL *ssl = NULL;
+    SSL_CONNECTION *sc;
+    STACK_OF(SSL_CIPHER) *old_tls, *old_list, *old_by_id;
+    int set_ok, ret = 0;
+
+    tls_provider_set_ciphersuite_mode("valid");
+    if (!TEST_ptr(ctx = SSL_CTX_new_ex(libctx, NULL, TLS_method()))
+        || !TEST_ptr(ssl = SSL_new(ctx))
+        || !TEST_ptr(sc = SSL_CONNECTION_FROM_SSL_ONLY(ssl))
+        || !TEST_true(SSL_set_ciphersuites(ssl,
+            "TLS_AES_128_GCM_SHA256")))
+        goto end;
+
+    old_tls = sc->tls13_ciphersuites;
+    old_list = sc->cipher_list;
+    old_by_id = sc->cipher_list_by_id;
+    MFAIL_start();
+    set_ok = SSL_set_ciphersuites(ssl, TLS_TEST_SHA256_NAME);
+    MFAIL_end();
+
+    if (set_ok) {
+        if (!TEST_int_eq(sk_SSL_CIPHER_num(sc->tls13_ciphersuites), 1)
+            || !TEST_int_eq(sk_SSL_CIPHER_value(
+                                sc->tls13_ciphersuites, 0)
+                                ->origin,
+                SSL_CIPHER_ORIGIN_PROVIDER))
+            goto end;
+    } else if (!TEST_ptr_eq(sc->tls13_ciphersuites, old_tls)
+        || !TEST_ptr_eq(sc->cipher_list, old_list)
+        || !TEST_ptr_eq(sc->cipher_list_by_id, old_by_id)) {
+        goto end;
+    }
+
+    ret = 1;
+end:
+    SSL_free(ssl);
     SSL_CTX_free(ctx);
     ERR_clear_error();
     tls_provider_set_ciphersuite_mode(NULL);
@@ -1053,6 +1228,54 @@ end:
     return ret;
 }
 
+static int test_reentrant_context_switch_rejected(void)
+{
+    SSL_CTX *initial = NULL, *target = NULL, *nested = NULL;
+    SSL *ssl = NULL;
+    SSL_CONNECTION *sc;
+    REENTRANT_SWITCH_DATA data = { 0 };
+    int ret = 0;
+
+    tls_provider_set_ciphersuite_mode("valid");
+    if (!TEST_ptr(initial = SSL_CTX_new_ex(libctx, NULL, TLS_client_method()))
+        || !TEST_ptr(target = SSL_CTX_new_ex(libctx, NULL,
+                         TLS_client_method()))
+        || !TEST_ptr(nested = SSL_CTX_new_ex(libctx, NULL,
+                         TLS_client_method()))
+        || !TEST_true(SSL_CTX_set_ciphersuites(initial,
+            TLS_TEST_SHA256_NAME))
+        || !TEST_true(SSL_CTX_set_ciphersuites(target,
+            TLS_TEST_SHA256_NAME))
+        || !TEST_true(SSL_CTX_set_ciphersuites(nested,
+            TLS_TEST_SHA256_NAME))
+        || !TEST_ptr(ssl = SSL_new(initial))
+        || !TEST_ptr(sc = SSL_CONNECTION_FROM_SSL_ONLY(ssl)))
+        goto end;
+    sc->s3.tmp.new_cipher = ssl_provider_ciphersuite_by_name(initial,
+        TLS_TEST_SHA256_NAME);
+    if (!TEST_ptr(sc->s3.tmp.new_cipher))
+        goto end;
+
+    data.nested = nested;
+    SSL_CTX_set_security_callback(target, reentrant_reject_security_cb);
+    SSL_CTX_set0_security_ex_data(target, &data);
+    if (!TEST_ptr_null(SSL_set_SSL_CTX(ssl, target))
+        || !TEST_ptr_eq(SSL_get_SSL_CTX(ssl), initial)
+        || !TEST_int_eq(data.calls, 1)
+        || !TEST_true(data.nested_failed))
+        goto end;
+
+    ret = 1;
+end:
+    SSL_free(ssl);
+    SSL_CTX_free(initial);
+    SSL_CTX_free(target);
+    SSL_CTX_free(nested);
+    ERR_clear_error();
+    tls_provider_set_ciphersuite_mode(NULL);
+    return ret;
+}
+
 static int test_server_context_rejects_conflicting_descriptor(void)
 {
     SSL_CTX *sctx = NULL, *cctx = NULL;
@@ -1138,9 +1361,10 @@ static int test_switched_context_supported_ciphers(void)
 {
     SSL_CTX *initial = NULL, *alternate = NULL;
     SSL *ssl = NULL;
-    STACK_OF(SSL_CIPHER) *supported = NULL;
-    const SSL_CIPHER *canonical, *listed = NULL;
-    int i, ret = 0;
+    STACK_OF(SSL_CIPHER) *supported = NULL, *borrowed = NULL;
+    const SSL_CIPHER *canonical, *listed = NULL, *borrowed_provider = NULL;
+    const char *borrowed_name = NULL;
+    int i, borrowed_idx = -1, ret = 0;
 
     tls_provider_set_ciphersuite_mode("valid");
     if (!TEST_ptr(initial = SSL_CTX_new_ex(libctx, NULL, TLS_method()))
@@ -1151,7 +1375,20 @@ static int test_switched_context_supported_ciphers(void)
             TLS_TEST_SHA256_NAME))
         || !TEST_ptr(canonical = ssl_provider_ciphersuite_by_name(initial,
                          TLS_TEST_SHA256_NAME))
-        || !TEST_ptr(ssl = SSL_new(initial))
+        || !TEST_ptr(ssl = SSL_new(initial)))
+        goto end;
+    borrowed = SSL_get_ciphers(ssl);
+    if (!TEST_ptr(borrowed))
+        goto end;
+    for (i = 0; i < sk_SSL_CIPHER_num(borrowed); i++) {
+        borrowed_provider = sk_SSL_CIPHER_value(borrowed, i);
+        if (borrowed_provider->origin == SSL_CIPHER_ORIGIN_PROVIDER) {
+            borrowed_idx = i;
+            break;
+        }
+    }
+    if (!TEST_int_ge(borrowed_idx, 0)
+        || !TEST_ptr(borrowed_name = SSL_get_cipher_list(ssl, borrowed_idx))
         || !TEST_ptr(SSL_set_SSL_CTX(ssl, alternate))
         || !TEST_ptr(supported = SSL_get1_supported_ciphers(ssl)))
         goto end;
@@ -1167,6 +1404,11 @@ static int test_switched_context_supported_ciphers(void)
     alternate = NULL;
     if (!TEST_ptr_eq(listed, canonical)
         || !TEST_ptr(SSL_set_SSL_CTX(ssl, NULL))
+        || !TEST_ptr_eq(sk_SSL_CIPHER_value(borrowed, borrowed_idx),
+            canonical)
+        || !TEST_str_eq(SSL_CIPHER_get_name(borrowed_provider),
+            TLS_TEST_SHA256_NAME)
+        || !TEST_str_eq(borrowed_name, TLS_TEST_SHA256_NAME)
         || !TEST_str_eq(SSL_CIPHER_get_name(listed), TLS_TEST_SHA256_NAME))
         goto end;
 
@@ -1619,14 +1861,18 @@ int setup_tests(void)
     ADD_TEST(test_oversized_aead_fixture);
     ADD_ALL_TESTS(test_ciphersuite_mode, OSSL_NELEM(ciphersuite_tests));
     ADD_TEST(test_provider_registry_indexes);
+    ADD_TEST(test_provider_peer_list_deduplication);
     ADD_TEST(test_property_query_exclusion);
     ADD_TEST(test_provider_composition);
+    ADD_TEST(test_provider_record_limit);
     ADD_MFAIL_SAMPLED_NO_CHECK_TEST(test_provider_discovery_mfail, 64);
+    ADD_MFAIL_SAMPLED_NO_CHECK_TEST(test_ssl_ciphersuites_mfail, 64);
     ADD_ALL_TESTS(test_provider_handshake, 2);
     ADD_TEST(test_provider_hrr);
     ADD_ALL_TESTS(test_sni_context_switch, 4);
     ADD_ALL_TESTS(test_late_provider_context_switch, 5);
     ADD_TEST(test_installed_provider_context_switch);
+    ADD_TEST(test_reentrant_context_switch_rejected);
     ADD_TEST(test_server_context_rejects_conflicting_descriptor);
     ADD_ALL_TESTS(test_client_context_rejects_provider_mismatch, 2);
     ADD_TEST(test_switched_context_supported_ciphers);

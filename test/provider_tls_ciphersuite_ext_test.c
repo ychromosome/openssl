@@ -243,7 +243,11 @@ static int test_resume_into_provider_suite(int idx)
         || !TEST_ptr(after = SSL_get1_session(clientssl))
         || !TEST_false(SSL_SESSION_is_resumable(after))
         || !TEST_int_eq(SSL_SESSION_get0_cipher(after)->origin,
-            SSL_CIPHER_ORIGIN_PROVIDER))
+            SSL_CIPHER_ORIGIN_PROVIDER)
+        || !TEST_int_eq(SSL_SESSION_get0_cipher(sess)->origin,
+            SSL_CIPHER_ORIGIN_STATIC)
+        || !TEST_false(sess->provider_cipher_seen)
+        || !TEST_true(SSL_SESSION_is_resumable(sess)))
         goto end;
 
     ret = 1;
@@ -637,6 +641,63 @@ end:
     return ret;
 }
 
+static int reject_supported_security_cb(const SSL *ssl, const SSL_CTX *ctx,
+    int op, int bits, int nid, void *other, void *ex)
+{
+    const SSL_CIPHER *cipher = other;
+
+    if (op == SSL_SECOP_CIPHER_SUPPORTED && cipher != NULL
+        && cipher->origin == SSL_CIPHER_ORIGIN_PROVIDER)
+        return 0;
+    return 1;
+}
+
+static int test_provider_psk_early_context_policy(void)
+{
+    static const unsigned char early[] = "provider early data policy";
+    const SUITE_VARIANT *v = &variants[0];
+    SSL_CTX *sctx = NULL, *cctx = NULL, *rejected = NULL;
+    SSL *serverssl = NULL, *clientssl = NULL;
+    size_t written = 0;
+    int ret = 0;
+
+    if (!make_pair(v->mode, v->provname, v->provname, cert, privkey,
+            &sctx, &cctx)
+        || !TEST_true(SSL_CTX_set_max_early_data(sctx, 1024))
+        || !TEST_ptr(rejected = SSL_CTX_new_ex(libctx, NULL,
+                         TLS_client_method()))
+        || !TEST_true(SSL_CTX_set_ciphersuites(rejected, v->provname)))
+        goto end;
+    SSL_CTX_set_security_callback(rejected, reject_supported_security_cb);
+
+    SSL_CTX_set_psk_use_session_callback(cctx, use_session_cb);
+    SSL_CTX_set_psk_find_session_callback(sctx, find_session_cb);
+    if (!TEST_true(create_ssl_objects(sctx, cctx, &serverssl, &clientssl,
+            NULL, NULL))
+        || !TEST_ptr(clientpsk = make_provider_psk(clientssl, v, 1024))
+        || !TEST_ptr(serverpsk = make_provider_psk(serverssl, v, 1024))
+        || !TEST_true(SSL_write_early_data(clientssl, early, sizeof(early),
+            &written))
+        || !TEST_size_t_eq(written, sizeof(early))
+        || !TEST_ptr_null(SSL_set_SSL_CTX(clientssl, rejected))
+        || !TEST_ptr_eq(SSL_get_SSL_CTX(clientssl), cctx))
+        goto end;
+
+    ret = 1;
+end:
+    SSL_SESSION_free(clientpsk);
+    SSL_SESSION_free(serverpsk);
+    clientpsk = serverpsk = NULL;
+    SSL_free(serverssl);
+    SSL_free(clientssl);
+    SSL_CTX_free(sctx);
+    SSL_CTX_free(cctx);
+    SSL_CTX_free(rejected);
+    ERR_clear_error();
+    tls_provider_set_ciphersuite_mode(NULL);
+    return ret;
+}
+
 static int test_external_psk_foreign_server_rejects_early_data(void)
 {
     static const unsigned char early[] = "foreign provider early data";
@@ -700,6 +761,66 @@ end:
     return ret;
 }
 
+static int test_external_psk_foreign_digest_alias(void)
+{
+    const SUITE_VARIANT *v = &variants[0];
+    OSSL_LIB_CTX *foreignlibctx = NULL;
+    OSSL_PROVIDER *foreign_default = NULL, *foreign_tls = NULL;
+    SSL_CTX *foreignctx = NULL, *sctx = NULL, *cctx = NULL;
+    SSL *foreignssl = NULL, *serverssl = NULL, *clientssl = NULL;
+    int ret = 0;
+
+    tls_provider_set_ciphersuite_mode("valid-foreign-digest");
+    if (!TEST_ptr(foreignlibctx = OSSL_LIB_CTX_new())
+        || !TEST_true(OSSL_PROVIDER_add_builtin(foreignlibctx,
+            "tls-provider-foreign", tls_provider_init))
+        || !TEST_ptr(foreign_default = OSSL_PROVIDER_load(foreignlibctx,
+                         "default"))
+        || !TEST_ptr(foreign_tls = OSSL_PROVIDER_load(foreignlibctx,
+                         "tls-provider-foreign"))
+        || !TEST_ptr(foreignctx = SSL_CTX_new_ex(foreignlibctx, NULL,
+                         TLS_method()))
+        || !TEST_true(SSL_CTX_set_ciphersuites(foreignctx, v->provname))
+        || !TEST_ptr(foreignssl = SSL_new(foreignctx))
+        || !TEST_ptr(clientpsk = make_provider_psk(foreignssl, v, 0))
+        || !TEST_ptr(serverpsk = make_provider_psk(foreignssl, v, 0)))
+        goto end;
+
+    tls_provider_set_ciphersuite_mode("valid");
+    if (!make_pair(v->mode, v->provname, v->provname, cert, privkey,
+            &sctx, &cctx))
+        goto end;
+    SSL_CTX_set_psk_use_session_callback(cctx, use_session_cb);
+    SSL_CTX_set_psk_find_session_callback(sctx, find_session_cb);
+    if (!TEST_true(create_ssl_objects(sctx, cctx, &serverssl, &clientssl,
+            NULL, NULL))
+        || !TEST_true(create_ssl_connection(serverssl, clientssl,
+            SSL_ERROR_NONE))
+        || !TEST_true(SSL_session_reused(clientssl))
+        || !TEST_true(SSL_session_reused(serverssl))
+        || !check_negotiated(serverssl, clientssl, v->codepoint,
+            SSL_CIPHER_ORIGIN_PROVIDER))
+        goto end;
+
+    ret = 1;
+end:
+    SSL_SESSION_free(clientpsk);
+    SSL_SESSION_free(serverpsk);
+    clientpsk = serverpsk = NULL;
+    SSL_free(serverssl);
+    SSL_free(clientssl);
+    SSL_free(foreignssl);
+    SSL_CTX_free(sctx);
+    SSL_CTX_free(cctx);
+    SSL_CTX_free(foreignctx);
+    OSSL_PROVIDER_unload(foreign_tls);
+    OSSL_PROVIDER_unload(foreign_default);
+    OSSL_LIB_CTX_free(foreignlibctx);
+    ERR_clear_error();
+    tls_provider_set_ciphersuite_mode(NULL);
+    return ret;
+}
+
 static int test_provider_psk_nonstream_rejected(void)
 {
     SSL_CTX *tlsctx = NULL, *dtlsctx = NULL;
@@ -709,6 +830,7 @@ static int test_provider_psk_nonstream_rejected(void)
 #endif
     SSL_SESSION *sess = NULL;
     SSL_CONNECTION *sc;
+    const SSL_CIPHER *builtin = NULL;
     WPACKET wpkt = { 0 };
     PACKET packet = { 0 };
     unsigned char early_data_ext[16];
@@ -768,6 +890,13 @@ static int test_provider_psk_nonstream_rejected(void)
     if (!TEST_false(tls_parse_ctos_psk(sc, &packet,
             SSL_EXT_CLIENT_HELLO, NULL, 0))
         || !TEST_int_eq(ERR_GET_REASON(ERR_peek_error()), SSL_R_BAD_PSK))
+        goto end;
+
+    if (!TEST_ptr(builtin = SSL_CIPHER_find(tlsssl,
+                      (const unsigned char[]) { 0x13, 0x01 }))
+        || !TEST_true(SSL_SESSION_set_cipher(sess, builtin))
+        || !TEST_true(sess->provider_cipher_seen)
+        || !TEST_false(ssl_session_cipher_is_transport_admissible(sc, sess)))
         goto end;
 
 #if !defined(OPENSSL_NO_DTLS) && !defined(OPENSSL_NO_DTLS1_3)
@@ -1462,6 +1591,7 @@ static int test_d2i_into_provider_session(void)
     SSL_CTX *sctx = NULL, *cctx = NULL;
     SSL *serverssl = NULL, *clientssl = NULL;
     SSL_SESSION *prov = NULL, *builtin = NULL, *reuse = NULL;
+    const unsigned char tick[] = { 0x01 };
     unsigned char *der = NULL;
     const unsigned char *p;
     int derlen, ret = 0;
@@ -1491,21 +1621,32 @@ static int test_d2i_into_provider_session(void)
         || !TEST_int_eq(SSL_SESSION_get0_cipher(prov)->origin,
             SSL_CIPHER_ORIGIN_PROVIDER))
         goto end;
+    prov->psk_external = 1;
+    OPENSSL_free(prov->ext.tick);
+    prov->ext.tick = OPENSSL_memdup(tick, sizeof(tick));
+    prov->ext.ticklen = sizeof(tick);
+    if (!TEST_ptr(prov->ext.tick))
+        goto end;
     p = der;
     if (!TEST_ptr_eq(d2i_SSL_SESSION_ex(&prov, &p, derlen, libctx, NULL), prov)
         || !TEST_int_eq(SSL_SESSION_get0_cipher(prov)->origin,
             SSL_CIPHER_ORIGIN_STATIC)
         || !TEST_false(prov->provider_cipher_seen)
+        || !TEST_false(prov->psk_external)
+        || !TEST_ptr_null(prov->ext.tick)
+        || !TEST_size_t_eq(prov->ext.ticklen, 0)
         || !TEST_true(prov->not_resumable)
         || !TEST_false(SSL_SESSION_is_resumable(prov))
         || !TEST_ptr(reuse = SSL_SESSION_dup(builtin)))
         goto end;
 
     reuse->not_resumable = 1;
+    reuse->psk_external = 1;
     p = der;
     if (!TEST_ptr_eq(d2i_SSL_SESSION_ex(&reuse, &p, derlen, libctx, NULL),
             reuse)
         || !TEST_false(reuse->provider_cipher_seen)
+        || !TEST_false(reuse->psk_external)
         || !TEST_true(reuse->not_resumable)
         || !TEST_false(SSL_SESSION_is_resumable(reuse)))
         goto end;
@@ -1516,6 +1657,83 @@ end:
     SSL_SESSION_free(prov);
     SSL_SESSION_free(builtin);
     SSL_SESSION_free(reuse);
+    SSL_free(serverssl);
+    SSL_free(clientssl);
+    SSL_CTX_free(sctx);
+    SSL_CTX_free(cctx);
+    ERR_clear_error();
+    tls_provider_set_ciphersuite_mode(NULL);
+    return ret;
+}
+
+static int test_d2i_provider_rollback_mfail(void)
+{
+    SSL_CTX *sctx = NULL, *cctx = NULL;
+    SSL *serverssl = NULL, *clientssl = NULL;
+    SSL_SESSION *prov = NULL, *builtin = NULL, *decoded;
+    const SSL_CIPHER *provider_cipher = NULL;
+    unsigned char *der = NULL;
+    const unsigned char *p;
+    int derlen, ret = 0;
+
+    if (!make_pair("valid", BUILTIN_SHA256_NAME, BUILTIN_SHA256_NAME, cert,
+            privkey, &sctx, &cctx)
+        || !TEST_true(create_ssl_objects(sctx, cctx, &serverssl, &clientssl,
+            NULL, NULL))
+        || !TEST_true(create_ssl_connection(serverssl, clientssl,
+            SSL_ERROR_NONE))
+        || !TEST_ptr(builtin = SSL_get1_session(serverssl)))
+        goto end;
+    OPENSSL_free(builtin->ext.hostname);
+    builtin->ext.hostname = OPENSSL_strdup("late-allocation.example");
+    if (!TEST_ptr(builtin->ext.hostname)
+        || !TEST_int_gt(derlen = i2d_SSL_SESSION(builtin, &der), 0))
+        goto end;
+    SSL_free(serverssl);
+    SSL_free(clientssl);
+    serverssl = clientssl = NULL;
+
+    if (!TEST_true(SSL_CTX_set_ciphersuites(sctx, PROV_SHA256_NAME))
+        || !TEST_true(SSL_CTX_set_ciphersuites(cctx, PROV_SHA256_NAME))
+        || !TEST_true(create_ssl_objects(sctx, cctx, &serverssl, &clientssl,
+            NULL, NULL))
+        || !TEST_true(create_ssl_connection(serverssl, clientssl,
+            SSL_ERROR_NONE))
+        || !TEST_ptr(prov = SSL_get1_session(serverssl))
+        || !TEST_ptr(provider_cipher = SSL_SESSION_get0_cipher(prov))
+        || !TEST_int_eq(provider_cipher->origin,
+            SSL_CIPHER_ORIGIN_PROVIDER))
+        goto end;
+
+    SSL_free(serverssl);
+    SSL_free(clientssl);
+    SSL_CTX_free(sctx);
+    SSL_CTX_free(cctx);
+    serverssl = clientssl = NULL;
+    sctx = cctx = NULL;
+
+    p = der;
+    MFAIL_start();
+    decoded = d2i_SSL_SESSION_ex(&prov, &p, derlen, libctx, NULL);
+    MFAIL_end();
+    if (decoded == NULL) {
+        if (!TEST_ptr_eq(SSL_SESSION_get0_cipher(prov), provider_cipher)
+            || !TEST_true(prov->provider_cipher_seen)
+            || !TEST_str_eq(SSL_CIPHER_get_name(provider_cipher),
+                PROV_SHA256_NAME))
+            goto end;
+    } else if (!TEST_ptr_eq(decoded, prov)
+        || !TEST_int_eq(SSL_SESSION_get0_cipher(prov)->origin,
+            SSL_CIPHER_ORIGIN_STATIC)
+        || !TEST_false(prov->provider_cipher_seen)) {
+        goto end;
+    }
+
+    ret = 1;
+end:
+    OPENSSL_free(der);
+    SSL_SESSION_free(prov);
+    SSL_SESSION_free(builtin);
     SSL_free(serverssl);
     SSL_free(clientssl);
     SSL_CTX_free(sctx);
@@ -1764,7 +1982,9 @@ int setup_tests(void)
     ADD_ALL_TESTS(test_external_psk_provider, 4);
     ADD_TEST(test_provider_psk_early_data_admissibility);
     ADD_TEST(test_provider_psk_early_context_switch);
+    ADD_TEST(test_provider_psk_early_context_policy);
     ADD_TEST(test_external_psk_foreign_server_rejects_early_data);
+    ADD_TEST(test_external_psk_foreign_digest_alias);
     ADD_TEST(test_provider_psk_nonstream_rejected);
     ADD_ALL_TESTS(test_stateless_cookie, 2);
     ADD_ALL_TESTS(test_security_callback, 4);
@@ -1781,6 +2001,7 @@ int setup_tests(void)
     ADD_TEST(test_conf_and_case);
     ADD_TEST(test_session_outlives_ctx);
     ADD_TEST(test_d2i_into_provider_session);
+    ADD_MFAIL_SAMPLED_NO_CHECK_TEST(test_d2i_provider_rollback_mfail, 64);
     ADD_TEST(test_multiple_providers_collide);
     ADD_TEST(test_concurrent_handshakes_prebuilt_contexts);
     ADD_TEST(test_concurrent_provider_discovery_reload);

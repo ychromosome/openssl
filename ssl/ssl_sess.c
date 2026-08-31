@@ -147,9 +147,9 @@ int ssl_session_set_cipher(SSL_SESSION *session, const SSL_CIPHER *cipher)
 int ssl_session_cipher_is_transport_admissible(const SSL_CONNECTION *s,
     const SSL_SESSION *session)
 {
-    return session == NULL || session->cipher == NULL
+    return session == NULL
         || (!SSL_CONNECTION_IS_DTLS(s) && !SSL_IS_QUIC_HANDSHAKE(s))
-        || session->cipher->origin != SSL_CIPHER_ORIGIN_PROVIDER;
+        || !session->provider_cipher_seen;
 }
 
 int ssl_session_cipher_is_early_data_admissible(const SSL_CONNECTION *s,
@@ -1381,6 +1381,8 @@ void SSL_CTX_flush_sessions_ex(SSL_CTX *s, time_t t)
 
 int ssl_clear_bad_session(SSL_CONNECTION *s)
 {
+    if (s->session != NULL && s->session->provider_cipher_seen)
+        return 1;
     if ((s->session != NULL) && !(s->shutdown & SSL_SENT_SHUTDOWN) && !(SSL_in_init(SSL_CONNECTION_GET_SSL(s)) || SSL_in_before(SSL_CONNECTION_GET_SSL(s)))) {
         SSL_CTX_remove_session(s->session_ctx, s->session);
         return 1;

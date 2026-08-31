@@ -3259,6 +3259,19 @@ MSG_PROCESS_RETURN tls_process_new_session_ticket(SSL_CONNECTION *s,
         goto err;
     }
 
+    if (s->session->provider_cipher_seen) {
+        PACKET extpkt;
+
+        if (!PACKET_forward(pkt, ticklen)
+            || (SSL_CONNECTION_IS_VERSION13(s)
+                && (!PACKET_as_length_prefixed_2(pkt, &extpkt)
+                    || PACKET_remaining(pkt) != 0))) {
+            SSLfatal(s, SSL_AD_DECODE_ERROR, SSL_R_LENGTH_MISMATCH);
+            goto err;
+        }
+        return MSG_PROCESS_FINISHED_READING;
+    }
+
     /*
      * Server is allowed to change its mind (in <=TLSv1.2) and send an empty
      * ticket. We already checked this TLSv1.3 case above, so it should never

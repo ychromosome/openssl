@@ -273,9 +273,11 @@ SSL_SESSION *d2i_SSL_SESSION_ex(SSL_SESSION **a, const unsigned char **pp,
     long id;
     size_t tmpl;
     const unsigned char *p = *pp;
-    const SSL_CIPHER *cipher;
+    const SSL_CIPHER *cipher, *saved_cipher = NULL;
+    uint32_t saved_cipher_id = 0;
     SSL_SESSION_ASN1 *as = NULL;
     SSL_SESSION *ret = NULL;
+    int reuse = a != NULL && *a != NULL, saved_cipher_valid = 0;
 
     as = d2i_SSL_SESSION_ASN1(NULL, &p, length);
     /* ASN.1 code returns suitable error */
@@ -288,6 +290,11 @@ SSL_SESSION *d2i_SSL_SESSION_ex(SSL_SESSION **a, const unsigned char **pp,
             goto err;
     } else {
         ret = *a;
+        if (!ssl_cipher_up_ref(ret->cipher))
+            goto err;
+        saved_cipher = ret->cipher;
+        saved_cipher_id = ret->cipher_id;
+        saved_cipher_valid = 1;
     }
 
     if (as->version != SSL_SESSION_ASN1_VERSION) {
@@ -383,6 +390,7 @@ SSL_SESSION *d2i_SSL_SESSION_ex(SSL_SESSION **a, const unsigned char **pp,
         as->tlsext_tick->data = NULL;
     } else {
         ret->ext.tick = NULL;
+        ret->ext.ticklen = 0;
     }
 #ifndef OPENSSL_NO_COMP
     if (as->comp_id) {
@@ -430,6 +438,9 @@ SSL_SESSION *d2i_SSL_SESSION_ex(SSL_SESSION **a, const unsigned char **pp,
 
     /* A successful decode replaces the provider-cipher state. */
     ret->provider_cipher_seen = 0;
+    ret->psk_external = 0;
+
+    ssl_cipher_free(saved_cipher);
 
     if ((a != NULL) && (*a == NULL))
         *a = ret;
@@ -438,6 +449,13 @@ SSL_SESSION *d2i_SSL_SESSION_ex(SSL_SESSION **a, const unsigned char **pp,
 
 err:
     M_ASN1_free_of(as, SSL_SESSION_ASN1);
+    if (reuse && ret != NULL && saved_cipher_valid) {
+        ssl_cipher_free(ret->cipher);
+        ret->cipher = saved_cipher;
+        ret->cipher_id = saved_cipher_id;
+        saved_cipher = NULL;
+    }
+    ssl_cipher_free(saved_cipher);
     if ((a == NULL) || (*a != ret))
         SSL_SESSION_free(ret);
     return NULL;
