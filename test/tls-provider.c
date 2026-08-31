@@ -1231,7 +1231,8 @@ static int tls_prov_get_ciphersuites(OSSL_CALLBACK *cb, void *arg)
         return cb(params, arg);
     }
 
-    if (strcmp(tls_ciphersuite_mode, "valid") == 0)
+    if (strcmp(tls_ciphersuite_mode, "valid") == 0
+        || strcmp(tls_ciphersuite_mode, "suite-only") == 0)
         return cb(params, arg);
     if (strcmp(tls_ciphersuite_mode, "valid-limit") == 0) {
         params[TLS_CIPHERSUITE_AEAD_PARAM].data = limited_aes128;
@@ -1344,6 +1345,10 @@ static int tls_prov_get_ciphersuites(OSSL_CALLBACK *cb, void *arg)
     } else if (strcmp(tls_ciphersuite_mode, "unterminated-name") == 0) {
         params[TLS_CIPHERSUITE_NAME_PARAM].data_size
             = strlen(tls_ciphersuite_name);
+    } else if (strcmp(tls_ciphersuite_mode, "unterminated-max-name") == 0) {
+        params[TLS_CIPHERSUITE_NAME_PARAM].data = overlong_name;
+        params[TLS_CIPHERSUITE_NAME_PARAM].data_size
+            = sizeof(overlong_name) - 1;
     } else if (strcmp(tls_ciphersuite_mode, "embedded-nul-name") == 0) {
         params[TLS_CIPHERSUITE_NAME_PARAM].data = embedded_nul_name;
         params[TLS_CIPHERSUITE_NAME_PARAM].data_size
@@ -1491,12 +1496,29 @@ static int tls_prov_get_capabilities(void *provctx, const char *capability,
     int ret = 0;
     int i;
 
+    if (tls_ciphersuite_mode != NULL
+        && strcmp(tls_ciphersuite_mode, "suite-only") == 0
+        && strcmp(capability, "TLS-CIPHERSUITE") != 0)
+        return 0;
+
     if (strcmp(capability, "TLS-GROUP") == 0) {
         memcpy(group_params, xor_group_params, sizeof(group_params));
         memcpy(kemgroup_params, xor_kemgroup_params,
             sizeof(kemgroup_params));
         group_params[3].data = &pctx->tls_alg_ids[0];
         kemgroup_params[3].data = &pctx->tls_alg_ids[1];
+
+        if (tls_ciphersuite_mode != NULL
+            && strcmp(tls_ciphersuite_mode, "invalid-group") == 0) {
+            group_params[0].data = NULL;
+            return cb(group_params, arg);
+        }
+
+        if (tls_ciphersuite_mode != NULL
+            && strcmp(tls_ciphersuite_mode, "group-then-abort") == 0) {
+            (void)cb(group_params, arg);
+            return 0;
+        }
 
         /* Register our 2 groups */
         if (pctx->tls_alg_ids[0] < 65024

@@ -35,6 +35,9 @@ typedef struct {
 static const CIPHERSUITE_TEST ciphersuite_tests[] = {
     { "unsupported", 1, 0 },
     { "empty", 1, 0 },
+    { "suite-only", 1, 1 },
+    { "invalid-group", 0, 0 },
+    { "group-then-abort", 0, 0 },
     { "valid", 1, 1 },
     { "valid-composed", 1, 1 },
     { "valid-unknown-param", 1, 1 },
@@ -43,6 +46,7 @@ static const CIPHERSUITE_TEST ciphersuite_tests[] = {
     { "bang-name", 1, 1 },
     { "tilde-name", 1, 1 },
     { "unterminated-name", 1, 1 },
+    { "unterminated-max-name", 0, 0 },
     { "unterminated-algorithm-names", 1, 1 },
     { "max-name", 1, 1 },
     { "max-aead-name", 1, 0 },
@@ -520,6 +524,36 @@ static int test_provider_registry_indexes(void)
 
     ret = 1;
 end:
+    SSL_CTX_free(ctx);
+    ERR_clear_error();
+    tls_provider_set_ciphersuite_mode(NULL);
+    return ret;
+}
+
+static int test_provider_long_description(void)
+{
+    SSL_CTX *ctx = NULL;
+    const SSL_CIPHER *suite;
+    char supplied[512], shortbuf[128];
+    char *allocated = NULL;
+    int ret = 0;
+
+    tls_provider_set_ciphersuite_mode("max-name");
+    if (!TEST_ptr(ctx = SSL_CTX_new_ex(libctx, NULL, TLS_method()))
+        || !TEST_ptr(suite = sk_SSL_CIPHER_value(
+                         ctx->provider_ciphersuites, 0))
+        || !TEST_ptr(allocated = SSL_CIPHER_description(suite, NULL, 0))
+        || !TEST_ptr(strstr(allocated, suite->name))
+        || !TEST_ptr(SSL_CIPHER_description(suite, supplied,
+            sizeof(supplied)))
+        || !TEST_ptr(strstr(supplied, suite->name))
+        || !TEST_ptr_null(SSL_CIPHER_description(suite, shortbuf,
+            sizeof(shortbuf))))
+        goto end;
+
+    ret = 1;
+end:
+    OPENSSL_free(allocated);
     SSL_CTX_free(ctx);
     ERR_clear_error();
     tls_provider_set_ciphersuite_mode(NULL);
@@ -1488,13 +1522,23 @@ static int test_provider_unload_lifetime(void)
 {
     static const unsigned char message[] = "provider unloaded";
     unsigned char received[sizeof(message)];
+    OSSL_LIB_CTX *localctx = NULL;
+    OSSL_PROVIDER *localdef = NULL, *localtls = NULL;
     SSL_CTX *sctx = NULL, *cctx = NULL;
     SSL *serverssl = NULL, *clientssl = NULL;
     size_t written = 0, readbytes = 0;
     int ret = 0;
 
     tls_provider_set_ciphersuite_mode("valid");
-    if (!TEST_true(create_ssl_ctx_pair(libctx, TLS_server_method(),
+    if (!TEST_ptr(localctx = OSSL_LIB_CTX_new())
+        || !TEST_true(OSSL_PROVIDER_add_builtin(localctx,
+            "tls-provider-unload", tls_provider_init))
+        || !TEST_ptr(localdef = OSSL_PROVIDER_load(localctx, "default"))
+        || !TEST_ptr(localtls = OSSL_PROVIDER_load(localctx,
+                         "tls-provider-unload"))
+        || !TEST_true(EVP_set_default_properties(localctx,
+            "?provider=tls-provider"))
+        || !TEST_true(create_ssl_ctx_pair(localctx, TLS_server_method(),
             TLS_client_method(), TLS1_3_VERSION, TLS1_3_VERSION,
             &sctx, &cctx, cert, privkey))
         || !TEST_true(SSL_CTX_set_num_tickets(sctx, 0))
@@ -1502,9 +1546,9 @@ static int test_provider_unload_lifetime(void)
         || !TEST_true(SSL_CTX_set_ciphersuites(cctx, TLS_TEST_SHA256_NAME))
         || !TEST_true(create_ssl_objects(sctx, cctx, &serverssl, &clientssl,
             NULL, NULL))
-        || !TEST_true(OSSL_PROVIDER_unload(tlsprov)))
+        || !TEST_true(OSSL_PROVIDER_unload(localtls)))
         goto end;
-    tlsprov = NULL;
+    localtls = NULL;
 
     SSL_CTX_free(sctx);
     sctx = NULL;
@@ -1527,6 +1571,9 @@ end:
     SSL_free(clientssl);
     SSL_CTX_free(sctx);
     SSL_CTX_free(cctx);
+    OSSL_PROVIDER_unload(localtls);
+    OSSL_PROVIDER_unload(localdef);
+    OSSL_LIB_CTX_free(localctx);
     ERR_clear_error();
     tls_provider_set_ciphersuite_mode(NULL);
     return ret;
@@ -1590,6 +1637,7 @@ int setup_tests(void)
     ADD_TEST(test_oversized_aead_fixture);
     ADD_ALL_TESTS(test_ciphersuite_mode, OSSL_NELEM(ciphersuite_tests));
     ADD_TEST(test_provider_registry_indexes);
+    ADD_TEST(test_provider_long_description);
     ADD_TEST(test_provider_peer_list_deduplication);
     ADD_TEST(test_property_query_exclusion);
     ADD_TEST(test_provider_composition);
@@ -1610,7 +1658,6 @@ int setup_tests(void)
     ADD_TEST(test_provider_record_tamper);
     ADD_TEST(test_provider_large_fragmented_record);
     ADD_TEST(test_late_provider_load_not_discovered);
-    /* Must remain last because it unloads tlsprov. */
     ADD_TEST(test_provider_unload_lifetime);
     return 1;
 }

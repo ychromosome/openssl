@@ -643,6 +643,9 @@ supplying an entry cause context creation to fail. Libssl allocation and
 registry failures also abort context creation. An SSL_CTX accepts at most 128
 provider-defined ciphersuites.
 
+A return of 0 before the first callback is treated as an unsupported
+capability. A return of 0 after a callback aborts context creation.
+
 Provider-defined ciphersuites are not added to the default ciphersuite list and
 must be selected by name. Their code points require deployment coordination.
 SSL_set_SSL_CTX() keeps its existing behavior; provider descriptors continue
@@ -761,6 +764,10 @@ TLSv1.2 is 0x0303 (771 decimal). A 0 indicates that there is no defined minimum
 or maximum. A -1 indicates that the group should not be used in that protocol.
 
 =back
+
+A return of 0 before the first callback is treated as an unsupported
+capability. A callback failure or a return of 0 after a callback aborts context
+creation.
 
 =head3 "TLS-SIGALG" Capability
 
