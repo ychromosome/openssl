@@ -13,8 +13,8 @@ companion algorithm derived from the ciphersuite. The capability declares no
 such algorithm, so both protocols are excluded.
 
 The capability adds public source API macros but no public function or ABI
-symbol. Discovery after `SSL_CTX` creation and session resumption are not
-supported.
+symbol. Discovery after `SSL_CTX` creation is not supported. Sessions created
+under a provider suite cannot be resumed.
 
 Capability
 ----------
@@ -86,13 +86,9 @@ The capability does not supply a standard name, so
 `SSL_CIPHER_standard_name()` returns `NULL`.
 
 Wire IDs resolve through the connection's original `session_ctx`.
-After a provider suite has been selected or installed, `SSL_set_SSL_CTX()`
-requires the target context to expose the same fetched cipher and digest
-implementations with equivalent metadata. The suite must remain enabled in the
-connection's ciphersuite list, and the target context's security callback must
-permit it. A mismatch fails before the context changes. Built-in suites keep
-the existing `SSL_set_SSL_CTX()` behavior. A rejected switch during a
-handshake is fatal even if the callback ignores the return value.
+`SSL_set_SSL_CTX()` keeps its existing behavior and does not replace that
+registry. Switching to a context with a different library context or property
+query is outside this version's contract.
 
 Ownership and sessions
 ----------------------
@@ -111,15 +107,8 @@ provider-cipher and external-PSK markers but preserves any existing
 `not_resumable` state. A failed in-place decode leaves the prior cipher
 descriptor valid.
 
-Stream TLS 1.3 external-PSK callbacks may explicitly supply a session
-containing a provider suite, including for 0-RTT. DTLS and QUIC reject such
-sessions. Provider-suite 0-RTT requires an equivalent descriptor in the
-connection registry, an enabled suite, and approval from the connection's
-security callback. Otherwise early data is suppressed or rejected while the
-session remains eligible for an ordinary same-digest external-PSK handshake.
-The session remains ineligible for
-`SSL_set_session()`, caches, serialisation and tickets. A session produced by
-the completed connection remains subject to the same restrictions.
+External-PSK callbacks reject a session that has held a provider suite. This
+version does not support provider-backed external PSK or 0-RTT.
 
 Public `SSL_CIPHER` pointers are borrowed. Values returned by
 `SSL_CIPHER_find()`, `SSL_get1_supported_ciphers()` and
@@ -134,6 +123,10 @@ Deferred work
 An optional provider-origin restriction may be considered. The default must
 continue to permit composition through the `SSL_CTX` library context and
 property query.
+
+Context rebinding across different library contexts or property queries,
+provider-backed external PSK, and provider-backed 0-RTT require a separate
+design and review.
 
 Peer cipher lists discard duplicate provider wire IDs before selection.
 Built-in duplicate handling is unchanged.

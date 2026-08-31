@@ -1172,7 +1172,7 @@ EXT_RETURN tls_construct_ctos_early_data(SSL_CONNECTION *s, WPACKET *pkt,
     if (s->psk_use_session_cb != NULL
         && (!s->psk_use_session_cb(ussl, handmd, &id, &idlen, &psksess)
             || (psksess != NULL && psksess->ssl_version != version1_3)
-            || !ssl_session_cipher_is_transport_admissible(s, psksess))) {
+            || !ssl_session_is_external_psk_admissible(psksess))) {
         SSL_SESSION_free(psksess);
         SSLfatal(s, SSL_AD_INTERNAL_ERROR, SSL_R_BAD_PSK);
         return EXT_RETURN_FAIL;
@@ -1261,7 +1261,6 @@ EXT_RETURN tls_construct_ctos_early_data(SSL_CONNECTION *s, WPACKET *pkt,
     edsess = tls13_check_resumption_psk(s) ? s->session : psksess;
     if (s->early_data_state != SSL_EARLY_DATA_CONNECTING
         || edsess == NULL
-        || !ssl_session_cipher_is_early_data_admissible(s, edsess)
         || edsess->ext.max_early_data == 0) {
         s->max_early_data = 0;
         if (s->early_data_state == SSL_EARLY_DATA_CONNECTING) {
@@ -1456,7 +1455,7 @@ dopsksess:
         return EXT_RETURN_NOT_SENT;
 
     if (s->psksession != NULL) {
-        mdpsk = ssl_md(sctx, s->psksession->cipher->algorithm2);
+        mdpsk = ssl_cipher_get_evp_md(sctx, s->psksession->cipher);
         if (mdpsk == NULL) {
             /*
              * Don't recognize this cipher so we can't use the session.

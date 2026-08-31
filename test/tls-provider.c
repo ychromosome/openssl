@@ -418,7 +418,6 @@ static void release_tls_alg_ids(PROV_XOR_CTX *provctx);
 #define TLS_TEST_LIMITED_AEAD128_NAME "TLS-TEST-LIMITED-AES-128-GCM"
 #define TLS_TEST_SHA256_NAME "TLS-TEST-SHA2-256"
 #define TLS_TEST_SHA384_NAME "TLS-TEST-SHA2-384"
-#define TLS_TEST_FOREIGN_SHA256_NAME "TLS-TEST-FOREIGN-SHA2-256"
 #define TLS_TEST_RECORD_LIMIT 4
 
 typedef struct {
@@ -1045,14 +1044,6 @@ static const OSSL_ALGORITHM tls_prov_digests[] = {
     { NULL, NULL, NULL }
 };
 
-static const OSSL_ALGORITHM tls_prov_digests_with_foreign_sha256[] = {
-    { TLS_TEST_FOREIGN_SHA256_NAME ":SHA2-256",
-        "provider=tls-provider", tls_proxy_sha256_functions },
-    { TLS_TEST_SHA384_NAME ":SHA2-384:SHA384", "provider=tls-provider",
-        tls_proxy_sha384_functions },
-    { NULL, NULL, NULL }
-};
-
 static const OSSL_ALGORITHM tls_prov_digests_with_oversized_sha256[] = {
     { TLS_TEST_SHA256_NAME, "provider=tls-provider",
         tls_proxy_sha256_functions },
@@ -1185,7 +1176,6 @@ static int tls_prov_get_ciphersuites(OSSL_CALLBACK *cb, void *arg)
     char unavailable_digest[] = "TLS-TEST-NO-SUCH-DIGEST";
     char oversized[] = TLS_TEST_OVERSIZED_AEAD_NAME;
     char limited_aes128[] = TLS_TEST_LIMITED_AEAD128_NAME;
-    char foreign_sha256[] = TLS_TEST_FOREIGN_SHA256_NAME;
     char wide_aes128[] = TLS_TEST_WIDE_AES128_NAME;
     char bad_digest[] = "SHA2-512";
     char oversized_digest[] = TLS_TEST_OVERSIZED_DIGEST_NAME;
@@ -1249,12 +1239,6 @@ static int tls_prov_get_ciphersuites(OSSL_CALLBACK *cb, void *arg)
             = sizeof(limited_aes128);
         return cb(params, arg);
     }
-    if (strcmp(tls_ciphersuite_mode, "valid-foreign-digest") == 0) {
-        params[TLS_CIPHERSUITE_DIGEST_PARAM].data = foreign_sha256;
-        params[TLS_CIPHERSUITE_DIGEST_PARAM].data_size
-            = sizeof(foreign_sha256);
-        return cb(params, arg);
-    }
     if (strcmp(tls_ciphersuite_mode, "valid-composed") == 0) {
         params[TLS_CIPHERSUITE_NAME_PARAM].data = composed_name;
         params[TLS_CIPHERSUITE_NAME_PARAM].data_size = sizeof(composed_name);
@@ -1281,11 +1265,6 @@ static int tls_prov_get_ciphersuites(OSSL_CALLBACK *cb, void *arg)
         params[TLS_CIPHERSUITE_DIGEST_PARAM].data = sha384;
         params[TLS_CIPHERSUITE_DIGEST_PARAM].data_size = sizeof(sha384);
         params[TLS_CIPHERSUITE_SECBITS_PARAM].data = &sha384_secbits;
-        return cb(params, arg);
-    }
-    if (strcmp(tls_ciphersuite_mode, "valid-conflicting-sha256") == 0) {
-        params[TLS_CIPHERSUITE_AEAD_PARAM].data = aes256_gcm;
-        params[TLS_CIPHERSUITE_AEAD_PARAM].data_size = sizeof(aes256_gcm);
         return cb(params, arg);
     }
     if (strcmp(tls_ciphersuite_mode, "valid-unknown-param") == 0) {
@@ -4271,10 +4250,6 @@ static const OSSL_ALGORITHM *tls_prov_query(void *provctx, int operation_id,
         return tls_prov_ciphers;
     case OSSL_OP_DIGEST:
         if (tls_ciphersuite_mode != NULL) {
-            if (strcmp(tls_ciphersuite_mode,
-                    "valid-foreign-digest")
-                == 0)
-                return tls_prov_digests_with_foreign_sha256;
             if (strcmp(tls_ciphersuite_mode, "oversized-digest") == 0)
                 return tls_prov_digests_with_oversized_sha256;
             if (strcmp(tls_ciphersuite_mode,

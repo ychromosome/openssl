@@ -29,13 +29,9 @@ session based PSK (see L<SSL_CTX_set_psk_use_session_callback(3)>).
 
 After assignment of a provider-defined ciphersuite, B<s> is permanently
 non-resumable, non-cacheable and non-serialisable and cannot issue tickets.
-It remains eligible for explicit use through stream TLS 1.3 external-PSK
-callbacks, including for 0-RTT. DTLS and QUIC reject such a session. This use
-does not lift any of the restrictions. Provider-suite 0-RTT requires an
-equivalent enabled descriptor under the connection policy; otherwise only
-early data is suppressed or rejected. A successful in-place
-d2i_SSL_SESSION() call clears the provider-cipher marker but preserves an
-existing non-resumable state.
+External-PSK callbacks reject such a session; provider-backed external PSK and
+0-RTT are not supported. A successful in-place d2i_SSL_SESSION() call clears
+the provider-cipher marker but preserves an existing non-resumable state.
 
 =head1 RETURN VALUES
 
