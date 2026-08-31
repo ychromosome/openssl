@@ -1111,7 +1111,8 @@ static int tls13_check_resumption_psk(SSL_CONNECTION *s)
     if (s->session == NULL
         || s->session->ssl_version != version1_3
         || s->session->ext.ticklen == 0
-        || s->session->cipher == NULL)
+        || s->session->cipher == NULL
+        || s->session->provider_cipher_seen)
         return 0;
 
     mdres = ssl_cipher_get_evp_md(sctx, s->session->cipher);
@@ -1389,10 +1390,13 @@ EXT_RETURN tls_construct_ctos_psk(SSL_CONNECTION *s, WPACKET *pkt,
      * so don't add this extension.
      */
     if (s->session->ssl_version != version1_3
-        || (s->session->ext.ticklen == 0 && s->psksession == NULL))
+        || ((s->session->ext.ticklen == 0
+                || s->session->provider_cipher_seen)
+            && s->psksession == NULL))
         return EXT_RETURN_NOT_SENT;
 
-    if (s->session->ext.ticklen != 0) {
+    if (s->session->ext.ticklen != 0
+        && !s->session->provider_cipher_seen) {
         /* Get the digest associated with the ciphersuite in the session */
         if (s->session->cipher == NULL) {
             SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_INTERNAL_ERROR);
@@ -1458,7 +1462,7 @@ dopsksess:
         return EXT_RETURN_NOT_SENT;
 
     if (s->psksession != NULL) {
-        mdpsk = ssl_cipher_get_evp_md(sctx, s->psksession->cipher);
+        mdpsk = ssl_md(sctx, s->psksession->cipher->algorithm2);
         if (mdpsk == NULL) {
             /*
              * Don't recognize this cipher so we can't use the session.
@@ -2453,6 +2457,13 @@ int tls_parse_stoc_psk(SSL_CONNECTION *s, PACKET *pkt,
      * sent two tickets, or if we didn't send a PSK ticket.
      */
     if (identity == 0 && (s->psksession == NULL || s->ext.tick_identity == 2)) {
+        /* The application may share its ticket session across SSL objects. */
+        if ((sesstmp = ssl_session_dup(s->session, 0)) == NULL) {
+            SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_INTERNAL_ERROR);
+            return 0;
+        }
+        SSL_SESSION_free(s->session);
+        s->session = sesstmp;
         s->hit = 1;
         SSL_SESSION_free(s->psksession);
         s->psksession = NULL;

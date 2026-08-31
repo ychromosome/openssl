@@ -1502,14 +1502,14 @@ static int ciphersuite_cb(const char *elem, int len, void *arg)
     return 1;
 }
 
-static __owur int set_ciphersuites(const SSL_CTX *ctx,
-    STACK_OF(SSL_CIPHER) **currciphers, const char *str)
+static STACK_OF(SSL_CIPHER) *parse_ciphersuites(const SSL_CTX *ctx,
+    const char *str)
 {
     STACK_OF(SSL_CIPHER) *newciphers = sk_SSL_CIPHER_new_null();
     struct ciphersuite_cb_data_st data = { newciphers, ctx };
 
     if (newciphers == NULL)
-        return 0;
+        return NULL;
 
     /* Parse the list. We explicitly allow an empty list */
     if (*str != '\0'
@@ -1517,12 +1517,9 @@ static __owur int set_ciphersuites(const SSL_CTX *ctx,
             || sk_SSL_CIPHER_num(newciphers) == 0)) {
         ERR_raise(ERR_LIB_SSL, SSL_R_NO_CIPHER_MATCH);
         sk_SSL_CIPHER_free(newciphers);
-        return 0;
+        return NULL;
     }
-    sk_SSL_CIPHER_free(*currciphers);
-    *currciphers = newciphers;
-
-    return 1;
+    return newciphers;
 }
 
 static int update_cipher_list_by_id(STACK_OF(SSL_CIPHER) **cipher_list_by_id,
@@ -1599,39 +1596,49 @@ static int update_cipher_list(SSL_CTX *ctx,
 
 int SSL_CTX_set_ciphersuites(SSL_CTX *ctx, const char *str)
 {
-    int ret = set_ciphersuites(ctx, &(ctx->tls13_ciphersuites), str);
+    STACK_OF(SSL_CIPHER) *newciphers = parse_ciphersuites(ctx, str);
 
-    if (ret && ctx->cipher_list != NULL)
-        return update_cipher_list(ctx, &ctx->cipher_list, &ctx->cipher_list_by_id,
-            ctx->tls13_ciphersuites);
+    if (newciphers == NULL)
+        return 0;
+    if (ctx->cipher_list != NULL
+        && !update_cipher_list(ctx, &ctx->cipher_list,
+            &ctx->cipher_list_by_id, newciphers)) {
+        sk_SSL_CIPHER_free(newciphers);
+        return 0;
+    }
 
-    return ret;
+    sk_SSL_CIPHER_free(ctx->tls13_ciphersuites);
+    ctx->tls13_ciphersuites = newciphers;
+    return 1;
 }
 
 int SSL_set_ciphersuites(SSL *s, const char *str)
 {
-    STACK_OF(SSL_CIPHER) *cipher_list;
+    STACK_OF(SSL_CIPHER) *newciphers;
     SSL_CONNECTION *sc = SSL_CONNECTION_FROM_SSL(s);
-    int ret;
 
     if (sc == NULL)
         return 0;
 
-    ret = set_ciphersuites(sc->session_ctx, &(sc->tls13_ciphersuites), str);
-
-    if (sc->cipher_list == NULL) {
-        if ((cipher_list = SSL_get_ciphers(s)) != NULL) {
-            sc->cipher_list = sk_SSL_CIPHER_dup(cipher_list);
-            if (sc->cipher_list != NULL)
-                ssl_cipher_stack_canon(sc, sc->cipher_list);
-        }
+    newciphers = parse_ciphersuites(sc->session_ctx, str);
+    if (newciphers == NULL)
+        return 0;
+    if (!ossl_assert(sc->cipher_list != NULL
+            && sc->cipher_list_by_id != NULL)) {
+        ERR_raise(ERR_LIB_SSL, ERR_R_INTERNAL_ERROR);
+        sk_SSL_CIPHER_free(newciphers);
+        return 0;
     }
-    if (ret && sc->cipher_list != NULL)
-        return update_cipher_list(s->ctx, &sc->cipher_list,
+    if (!update_cipher_list(s->ctx, &sc->cipher_list,
             &sc->cipher_list_by_id,
-            sc->tls13_ciphersuites);
+            newciphers)) {
+        sk_SSL_CIPHER_free(newciphers);
+        return 0;
+    }
 
-    return ret;
+    sk_SSL_CIPHER_free(sc->tls13_ciphersuites);
+    sc->tls13_ciphersuites = newciphers;
+    return 1;
 }
 
 STACK_OF(SSL_CIPHER) *ssl_create_cipher_list(SSL_CTX *ctx,

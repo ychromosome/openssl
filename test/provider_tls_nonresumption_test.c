@@ -238,8 +238,9 @@ static int test_injected_ticket_preserves_marker(void)
     if (!TEST_true(SSL_new_session_ticket(serverssl))
         || !TEST_true(SSL_write_ex(serverssl, message, sizeof(message),
             &written))
-        || !TEST_size_t_eq(written, sizeof(message))
-        || !TEST_true(SSL_read_ex(clientssl, received, sizeof(received),
+        || !TEST_size_t_eq(written, sizeof(message)))
+        goto end;
+    if (!TEST_true(SSL_read_ex(clientssl, received, sizeof(received),
             &readbytes))
         || !TEST_size_t_eq(readbytes, sizeof(received))
         || !TEST_mem_eq(received, readbytes, message, sizeof(message))
@@ -247,9 +248,10 @@ static int test_injected_ticket_preserves_marker(void)
         || !TEST_int_eq(nst_read, 1)
         || !TEST_ptr(client_session = SSL_get1_session(clientssl))
         || !TEST_true(client_session->provider_cipher_seen)
-        || !TEST_false(client_session->not_resumable)
+        || !TEST_true(client_session->not_resumable)
+        || !TEST_size_t_eq(client_session->ext.ticklen, 0)
         || !TEST_false(SSL_SESSION_is_resumable(client_session))
-        || !TEST_int_gt(new_session_calls, 0)
+        || !TEST_int_eq(new_session_calls, 0)
         || !TEST_long_eq(SSL_CTX_sess_number(cctx), 0)
         || !TEST_true(check_provider_session_error(
             i2d_SSL_SESSION(client_session, NULL)))
@@ -257,7 +259,12 @@ static int test_injected_ticket_preserves_marker(void)
             SSL_CTX_add_session(cctx, client_session)))
         || !TEST_ptr(probe = SSL_new(cctx))
         || !TEST_true(check_provider_session_error(
-            SSL_set_session(probe, client_session))))
+            SSL_set_session(probe, client_session)))
+        || !TEST_int_ge(SSL_shutdown(clientssl), 0)
+        || !TEST_int_ge(SSL_shutdown(serverssl), 0)
+        || !TEST_int_ge(SSL_shutdown(clientssl), 0)
+        || !TEST_true(SSL_clear(clientssl))
+        || !TEST_ptr_null(SSL_get_session(clientssl)))
         goto end;
 
     ret = 1;

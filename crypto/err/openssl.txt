@@ -1668,6 +1668,7 @@ SSL_R_TLS_ILLEGAL_EXPORTER_LABEL:367:tls illegal exporter label
 SSL_R_TLS_INVALID_ECPOINTFORMAT_LIST:157:tls invalid ecpointformat list
 SSL_R_TLS_SESSION_ID_TOO_LONG:300:tls session id too long
 SSL_R_TOO_MANY_KEY_UPDATES:132:too many key updates
+SSL_R_TOO_MANY_RECORDS:428:too many records
 SSL_R_TOO_MANY_WARN_ALERTS:409:too many warn alerts
 SSL_R_TOO_MUCH_EARLY_DATA:164:too much early data
 SSL_R_UNABLE_TO_FIND_ECDH_PARAMETERS:314:unable to find ecdh parameters

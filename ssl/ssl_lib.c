@@ -841,6 +841,22 @@ SSL *ossl_ssl_connection_new_int(SSL_CTX *ctx, SSL *user_ssl,
         goto cerr;
 
     /*
+     * Keep the SSL cipher views stable for the SSL lifetime.  In particular,
+     * do not expose provider descriptors owned only by an intermediate
+     * SSL_CTX that SSL_set_SSL_CTX() may later release.
+     */
+    if (ctx->cipher_list != NULL) {
+        s->cipher_list = sk_SSL_CIPHER_dup(ctx->cipher_list);
+        if (s->cipher_list == NULL)
+            goto cerr;
+    }
+    if (ctx->cipher_list_by_id != NULL) {
+        s->cipher_list_by_id = sk_SSL_CIPHER_dup(ctx->cipher_list_by_id);
+        if (s->cipher_list_by_id == NULL)
+            goto cerr;
+    }
+
+    /*
      * Earlier library versions used to copy the pointer to the CERT, not
      * its contents; only when setting new parameters for the per-SSL
      * copy, ssl_cert_new would be called (and the direct reference to
@@ -5576,6 +5592,7 @@ static int dup_ca_names(STACK_OF(X509_NAME) **dst, STACK_OF(X509_NAME) *src)
 SSL *SSL_dup(SSL *s)
 {
     SSL *ret;
+    STACK_OF(SSL_CIPHER) *cipher_list;
     int i;
     /* TODO(QUIC FUTURE): Add an SSL_METHOD function for duplication */
     SSL_CONNECTION *retsc;
@@ -5665,21 +5682,28 @@ SSL *SSL_dup(SSL *s)
     X509_VERIFY_PARAM_inherit(retsc->param, sc->param);
 
     /* dup the cipher_list and cipher_list_by_id stacks */
+    cipher_list = NULL;
     if (sc->cipher_list != NULL) {
-        if ((retsc->cipher_list = sk_SSL_CIPHER_dup(sc->cipher_list)) == NULL)
+        if ((cipher_list = sk_SSL_CIPHER_dup(sc->cipher_list)) == NULL)
             goto err;
         /*
          * SSL_dup() constructs the new object from the current SSL_CTX, which
          * may differ from the source session_ctx after an SNI switch.
          */
-        ssl_cipher_stack_canon(retsc, retsc->cipher_list);
+        ssl_cipher_stack_canon(retsc, cipher_list);
     }
+    sk_SSL_CIPHER_free(retsc->cipher_list);
+    retsc->cipher_list = cipher_list;
+
+    cipher_list = NULL;
     if (sc->cipher_list_by_id != NULL) {
-        if ((retsc->cipher_list_by_id = sk_SSL_CIPHER_dup(sc->cipher_list_by_id))
+        if ((cipher_list = sk_SSL_CIPHER_dup(sc->cipher_list_by_id))
             == NULL)
             goto err;
-        ssl_cipher_stack_canon(retsc, retsc->cipher_list_by_id);
+        ssl_cipher_stack_canon(retsc, cipher_list);
     }
+    sk_SSL_CIPHER_free(retsc->cipher_list_by_id);
+    retsc->cipher_list_by_id = cipher_list;
 
     /* Dup the client_CA list */
     if (!dup_ca_names(&retsc->ca_names, sc->ca_names)
@@ -5959,7 +5983,7 @@ SSL_CTX *SSL_set_SSL_CTX(SSL *ssl, SSL_CTX *ctx)
     const SSL_CIPHER *cipher, *canonical[2] = { NULL, NULL };
     size_t canonical_count = 0, i, old_sid_ctx_length;
     unsigned char old_sid_ctx[SSL_MAX_SID_CTX_LENGTH];
-    int secop;
+    int canonical_secop[2] = { 0, 0 };
     SSL_CONNECTION *sc = SSL_CONNECTION_FROM_SSL_ONLY(ssl);
 
     /* TODO(QUIC FUTURE): Add support for QUIC */
@@ -5970,35 +5994,57 @@ SSL_CTX *SSL_set_SSL_CTX(SSL *ssl, SSL_CTX *ctx)
         return ssl->ctx;
     if (ctx == NULL)
         ctx = sc->session_ctx;
+    if (sc->provider_ctx_switching) {
+        ssl_provider_ctx_switch_error(sc);
+        return NULL;
+    }
 
     cipher = sc->s3.tmp.new_cipher;
     if (cipher != NULL && cipher->origin == SSL_CIPHER_ORIGIN_PROVIDER) {
         canonical[canonical_count] = ssl_cipher_canon_for_ctx(sc, ctx, cipher);
-        if (canonical[canonical_count++] == NULL) {
+        if (canonical[canonical_count] == NULL) {
             ssl_provider_ctx_switch_error(sc);
             return NULL;
         }
+        canonical_secop[canonical_count++] = sc->server
+            ? SSL_SECOP_CIPHER_SHARED
+            : SSL_SECOP_CIPHER_CHECK;
     } else if (cipher == NULL && sc->session != NULL
         && sc->session->cipher != NULL
         && sc->session->cipher->origin == SSL_CIPHER_ORIGIN_PROVIDER) {
         canonical[canonical_count] = ssl_cipher_canon_for_ctx(sc, ctx,
             sc->session->cipher);
-        if (canonical[canonical_count++] == NULL) {
+        if (canonical[canonical_count] == NULL) {
             ssl_provider_ctx_switch_error(sc);
             return NULL;
         }
+        canonical_secop[canonical_count++] = sc->server
+            ? SSL_SECOP_CIPHER_SHARED
+            : SSL_SECOP_CIPHER_CHECK;
     }
     if (sc->ext.early_data_session != NULL
         && sc->ext.early_data_session->cipher != NULL
         && sc->ext.early_data_session->cipher->origin
-            == SSL_CIPHER_ORIGIN_PROVIDER
-        && (canonical_count == 0
-            || canonical[0] != sc->ext.early_data_session->cipher)) {
-        canonical[canonical_count] = ssl_cipher_canon_for_ctx(sc, ctx,
+            == SSL_CIPHER_ORIGIN_PROVIDER) {
+        const SSL_CIPHER *early = ssl_cipher_canon_for_ctx(sc, ctx,
             sc->ext.early_data_session->cipher);
-        if (canonical[canonical_count++] == NULL) {
+        int early_secop = sc->server ? SSL_SECOP_CIPHER_SHARED
+                                     : SSL_SECOP_CIPHER_SUPPORTED;
+        int found = 0;
+
+        if (early == NULL) {
             ssl_provider_ctx_switch_error(sc);
             return NULL;
+        }
+        for (i = 0; i < canonical_count; i++) {
+            if (canonical[i] == early && canonical_secop[i] == early_secop) {
+                found = 1;
+                break;
+            }
+        }
+        if (!found) {
+            canonical[canonical_count] = early;
+            canonical_secop[canonical_count++] = early_secop;
         }
     }
 
@@ -6038,10 +6084,11 @@ SSL_CTX *SSL_set_SSL_CTX(SSL *ssl, SSL_CTX *ctx)
     sc->cert = new_cert;
     ssl->ctx = ctx;
 
-    secop = sc->server ? SSL_SECOP_CIPHER_SHARED : SSL_SECOP_CIPHER_CHECK;
+    sc->provider_ctx_switching = 1;
     for (i = 0; i < canonical_count; i++) {
-        if (!ssl_security(sc, secop, canonical[i]->strength_bits, 0,
+        if (!ssl_security(sc, canonical_secop[i], canonical[i]->strength_bits, 0,
                 (void *)canonical[i])) {
+            sc->provider_ctx_switching = 0;
             ssl->ctx = old_ctx;
             sc->cert = old_cert;
             sc->sid_ctx_length = old_sid_ctx_length;
@@ -6052,6 +6099,7 @@ SSL_CTX *SSL_set_SSL_CTX(SSL *ssl, SSL_CTX *ctx)
             return NULL;
         }
     }
+    sc->provider_ctx_switching = 0;
 
     ssl_cert_free(old_cert);
     SSL_CTX_free(old_ctx); /* decrement reference count */
@@ -7685,7 +7733,12 @@ int ossl_bytes_to_cipher_list(SSL_CONNECTION *s, PACKET *cipher_suites,
     while (PACKET_copy_bytes(cipher_suites, cipher, n)) {
         c = ssl_get_cipher_by_char(s, cipher, 1);
         if (c != NULL) {
-            if ((c->valid && !sk_SSL_CIPHER_push(sk, c)) || (!c->valid && !sk_SSL_CIPHER_push(scsvs, c))) {
+            STACK_OF(SSL_CIPHER) *target = c->valid ? sk : scsvs;
+
+            if (c->origin == SSL_CIPHER_ORIGIN_PROVIDER
+                && ssl_cipher_stack_find(target, c) >= 0)
+                continue;
+            if (!sk_SSL_CIPHER_push(target, c)) {
                 if (fatal)
                     SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_CRYPTO_LIB);
                 else

@@ -467,6 +467,9 @@ typedef enum {
 #define SSL_CIPHER_ORIGIN_STATIC 0
 #define SSL_CIPHER_ORIGIN_PROVIDER 1
 
+/* Conservative per-key write-record limit for provider TLS 1.3 suites. */
+#define TLS13_PROVIDER_RECORD_LIMIT (UINT64_C(1) << 24)
+
 /* used to hold info on the particular ciphers used */
 struct ssl_cipher_st {
     uint32_t valid;
@@ -1616,6 +1619,8 @@ struct ssl_connection_st {
         const void *buf, size_t len, SSL *ssl, void *arg);
     void *msg_callback_arg;
     int hit; /* reusing a previous session */
+    /* Reject SSL_CTX switches made recursively by target policy callbacks. */
+    uint8_t provider_ctx_switching;
     X509_VERIFY_PARAM *param;
     /* Per connection DANE state */
     SSL_DANE dane;

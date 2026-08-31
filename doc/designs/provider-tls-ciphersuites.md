@@ -45,11 +45,10 @@ the first record operation will succeed. Libssl derives and supplies the key
 length reported by the fetched cipher; discovery does not prove that the
 cipher rejects other lengths.
 
-A provider AEAD must refuse an encryption that would exceed an
-algorithm-specific per-key sending limit. The record layer treats cipher
-failure as fatal. This capability does not expose a threshold for proactive
-KeyUpdate; an AEAD that
-cannot enforce its limit by refusing encryption is unsupported.
+A provider suite is limited to 2^24 encrypted records per traffic key. An
+AEAD with a lower algorithm-specific limit must refuse encryption before that
+limit. Cipher failure is fatal to the record layer. KeyUpdate installs a new
+traffic key and resets the libssl counter.
 Provider suites do not use kTLS because offload would bypass the provider AEAD.
 
 Code points are not restricted to Private Use because an allocated suite may
@@ -66,10 +65,10 @@ Discovery
 ---------
 
 Discovery runs during `SSL_CTX_new_ex()` for methods that can negotiate TLS
-1.3. The owned descriptors are sorted by wire ID and a shallow name index is
-built for binary lookup. The registry is then immutable. A provider that does
-not implement the capability, or implements it with no entries, does not
-affect context creation.
+1.3. A context accepts at most 128 provider descriptors. The owned descriptors
+are sorted by wire ID and a shallow name index is built for binary lookup. The
+registry is then immutable. A provider that does not implement the capability,
+or implements it with no entries, does not affect context creation.
 
 An entry whose AEAD or digest cannot be fetched under the context property
 query is skipped. A malformed entry, a collision, a profile violation, or a
@@ -99,13 +98,18 @@ Ownership and sessions
 ----------------------
 
 The context registry owns each descriptor. A descriptor retains its AEAD and
-digest. `SSL_SESSION` holds a counted descriptor reference; other SSL stacks
-borrow descriptors kept alive by `session_ctx`.
+digest. `SSL_SESSION` holds a counted descriptor reference. Per-connection
+cipher stacks are shallow copies whose provider elements remain owned by the
+connection's `session_ctx`. They keep values returned by `SSL_get_ciphers()`
+valid across `SSL_set_SSL_CTX()`.
 
 Once a session has held a provider suite, it cannot be resumed, cached,
 serialised or ticketed. This state survives session duplication and later
-cipher assignment. A successful `d2i_SSL_SESSION()` clears the provider-cipher
-marker but preserves any existing `not_resumable` state.
+cipher assignment. A received ticket is parsed and ignored. `SSL_clear()`
+drops the marked session. A successful `d2i_SSL_SESSION()` clears the
+provider-cipher and external-PSK markers but preserves any existing
+`not_resumable` state. A failed in-place decode leaves the prior cipher
+descriptor valid.
 
 Stream TLS 1.3 external-PSK callbacks may explicitly supply a session
 containing a provider suite, including for 0-RTT. DTLS and QUIC reject such
@@ -131,9 +135,8 @@ An optional provider-origin restriction may be considered. The default must
 continue to permit composition through the `SSL_CTX` library context and
 property query.
 
-Discovery work grows linearly with the number of descriptors. Lookup uses
-sorted stacks after discovery. A descriptor limit requires a defined bound and
-failure policy.
+Peer cipher lists discard duplicate provider wire IDs before selection.
+Built-in duplicate handling is unchanged.
 
 Stronger AEAD compatibility probing requires a defined, side-effect-free EVP
 contract. Metadata checks do not prove that record operations will succeed.
