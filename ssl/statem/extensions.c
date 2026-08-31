@@ -1462,8 +1462,8 @@ static int final_server_name(SSL_CONNECTION *s, unsigned int context, int sent)
     }
 
     /*
-     * TLS 1.3 selects its ciphersuite before final SNI processing.  A callback
-     * may have changed the active SSL_CTX since that selection.
+     * TLS 1.3 selects its ciphersuite before final SNI processing. A callback
+     * may have changed the per-connection ciphersuite list since selection.
      */
 #ifndef OPENSSL_NO_TLS1_3
     if (s->server && SSL_CONNECTION_IS_VERSION13(s)

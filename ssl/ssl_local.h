@@ -1619,8 +1619,6 @@ struct ssl_connection_st {
         const void *buf, size_t len, SSL *ssl, void *arg);
     void *msg_callback_arg;
     int hit; /* reusing a previous session */
-    /* Reject SSL_CTX switches made recursively by target policy callbacks. */
-    uint8_t provider_ctx_switching;
     X509_VERIFY_PARAM *param;
     /* Per connection DANE state */
     SSL_DANE dane;
@@ -2886,21 +2884,17 @@ __owur int ssl_get_prev_session(SSL_CONNECTION *s, CLIENTHELLO_MSG *hello);
 __owur SSL_SESSION *ssl_session_dup(const SSL_SESSION *src, int ticket);
 __owur int ssl_session_set_cipher(SSL_SESSION *session,
     const SSL_CIPHER *cipher);
-__owur int ssl_session_cipher_is_transport_admissible(
-    const SSL_CONNECTION *s, const SSL_SESSION *session);
-__owur int ssl_session_cipher_is_early_data_admissible(
-    const SSL_CONNECTION *s, const SSL_SESSION *session);
+__owur int ssl_session_is_external_psk_admissible(const SSL_SESSION *session);
 __owur int ssl_cipher_up_ref(const SSL_CIPHER *cipher);
 void ssl_cipher_free(const SSL_CIPHER *cipher);
 __owur const SSL_CIPHER *ssl_cipher_canon(const SSL_CONNECTION *s,
     const SSL_CIPHER *cipher);
-__owur const SSL_CIPHER *ssl_cipher_canon_for_ctx(const SSL_CONNECTION *s,
-    const SSL_CTX *ctx, const SSL_CIPHER *cipher);
 __owur const SSL_CIPHER *ssl_cipher_canon_enabled(const SSL_CONNECTION *s,
     const SSL_CIPHER *cipher);
 int ssl_cipher_stack_find(STACK_OF(SSL_CIPHER) *sk,
     const SSL_CIPHER *cipher);
-void ssl_cipher_stack_canon(const SSL_CONNECTION *s, STACK_OF(SSL_CIPHER) *sk);
+__owur int ssl_cipher_stack_canon(const SSL_CONNECTION *s,
+    STACK_OF(SSL_CIPHER) *sk);
 __owur int ssl_cipher_id_cmp(const SSL_CIPHER *a, const SSL_CIPHER *b);
 DECLARE_OBJ_BSEARCH_GLOBAL_CMP_FN(SSL_CIPHER, SSL_CIPHER, ssl_cipher_id);
 __owur int ssl_cipher_ptr_id_cmp(const SSL_CIPHER *const *ap,

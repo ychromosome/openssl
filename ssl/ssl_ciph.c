@@ -209,22 +209,10 @@ const SSL_CIPHER *ssl_cipher_canon(const SSL_CONNECTION *s,
 const SSL_CIPHER *ssl_cipher_canon_enabled(const SSL_CONNECTION *s,
     const SSL_CIPHER *cipher)
 {
-    return ssl_cipher_canon_for_ctx(s, SSL_CONNECTION_GET_CTX(s), cipher);
-}
-
-const SSL_CIPHER *ssl_cipher_canon_for_ctx(const SSL_CONNECTION *s,
-    const SSL_CTX *ctx, const SSL_CIPHER *cipher)
-{
     const SSL_CIPHER *canonical = ssl_cipher_canon(s, cipher);
 
     if (canonical == NULL || canonical->origin != SSL_CIPHER_ORIGIN_PROVIDER)
         return canonical;
-    if (ctx == NULL)
-        return NULL;
-    if (ctx != s->session_ctx
-        && !ssl_provider_ciphersuite_equivalent(canonical,
-            ssl_provider_ciphersuite_by_id(ctx, canonical->id)))
-        return NULL;
     if (s->tls13_ciphersuites == NULL
         || ssl_cipher_stack_find(s->tls13_ciphersuites, canonical) < 0)
         return NULL;
@@ -249,21 +237,19 @@ int ssl_cipher_stack_find(STACK_OF(SSL_CIPHER) *sk,
     return -1;
 }
 
-void ssl_cipher_stack_canon(const SSL_CONNECTION *s, STACK_OF(SSL_CIPHER) *sk)
+int ssl_cipher_stack_canon(const SSL_CONNECTION *s, STACK_OF(SSL_CIPHER) *sk)
 {
-    int i = 0;
+    int i;
 
-    while (i < sk_SSL_CIPHER_num(sk)) {
+    for (i = 0; i < sk_SSL_CIPHER_num(sk); i++) {
         const SSL_CIPHER *cipher = sk_SSL_CIPHER_value(sk, i);
         const SSL_CIPHER *canonical = ssl_cipher_canon(s, cipher);
 
-        if (canonical == NULL) {
-            (void)sk_SSL_CIPHER_delete(sk, i);
-            continue;
-        }
+        if (canonical == NULL)
+            return 0;
         (void)sk_SSL_CIPHER_set(sk, i, canonical);
-        i++;
     }
+    return 1;
 }
 
 static const SSL_CIPHER *ssl_provider_ciphersuite_by_char(

@@ -71,15 +71,9 @@ No alerts are sent and the server will not acknowledge the requested servername.
 SSL_CTX_set_tlsext_servername_arg() sets a context-specific argument to be
 passed into the callback (via the I<arg> parameter) for this B<SSL_CTX>.
 
-Provider-defined ciphersuite wire IDs resolve through the connection's
-original SSL_CTX. If the callback switches contexts, the active context must
-expose the same fetched cipher and digest implementations with equivalent
-metadata, and the suite must remain enabled in the connection's ciphersuite
-list. Its security callback must also permit the suite. SSL_set_SSL_CTX()
-rejects an incompatible target before changing the context. The same rule
-applies to context switches from later callbacks. During a handshake, an
-incompatible switch makes the handshake fail even if the callback ignores the
-return value.
+Provider-defined ciphersuite wire IDs continue to resolve through the
+connection's original SSL_CTX. Switching to a context with a different library
+context or property query is outside the provider-ciphersuite contract.
 
 The behaviour of SSL_get_servername() depends on a number of different factors.
 In particular note that in TLSv1.3 the servername is negotiated in every

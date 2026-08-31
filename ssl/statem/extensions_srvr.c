@@ -1384,7 +1384,7 @@ int tls_parse_ctos_psk(SSL_CONNECTION *s, PACKET *pkt, unsigned int context,
             SSLfatal(s, SSL_AD_INTERNAL_ERROR, SSL_R_BAD_EXTENSION);
             return 0;
         }
-        if (!ssl_session_cipher_is_transport_admissible(s, sess)) {
+        if (!ssl_session_is_external_psk_admissible(sess)) {
             SSLfatal(s, SSL_AD_ILLEGAL_PARAMETER, SSL_R_BAD_PSK);
             goto err;
         }
@@ -1563,15 +1563,11 @@ int tls_parse_ctos_psk(SSL_CONNECTION *s, PACKET *pkt, unsigned int context,
             s->ext.ticket_expected = 1;
             continue;
         }
-        md = ssl_cipher_get_evp_md(sctx,
-            ext ? s->s3.tmp.new_cipher : sess->cipher);
+        md = ssl_cipher_get_evp_md(sctx, sess->cipher);
         if (md == NULL) {
             SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_INTERNAL_ERROR);
             goto err;
         }
-        if (s->ext.early_data_ok
-            && !ssl_session_cipher_is_early_data_admissible(s, sess))
-            s->ext.early_data_ok = 0;
         /*
          * Same-hash ciphersuite changes are allowed for TLSv1.3 PSK
          * resumption, but RFC 9846 Section 4.3.10 requires the selected

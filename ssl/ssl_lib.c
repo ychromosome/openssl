@@ -5681,26 +5681,43 @@ SSL *SSL_dup(SSL *s)
 
     X509_VERIFY_PARAM_inherit(retsc->param, sc->param);
 
-    /* dup the cipher_list and cipher_list_by_id stacks */
+    /*
+     * SSL_dup() constructs the new object from the current SSL_CTX, which may
+     * differ from the source session_ctx after an SNI switch. Duplicate all
+     * per-connection stacks and canonicalise provider entries.
+     */
+    cipher_list = NULL;
+    if (sc->tls13_ciphersuites != NULL) {
+        cipher_list = sk_SSL_CIPHER_dup(sc->tls13_ciphersuites);
+        if (cipher_list == NULL
+            || !ssl_cipher_stack_canon(retsc, cipher_list)) {
+            sk_SSL_CIPHER_free(cipher_list);
+            goto err;
+        }
+    }
+    sk_SSL_CIPHER_free(retsc->tls13_ciphersuites);
+    retsc->tls13_ciphersuites = cipher_list;
+
     cipher_list = NULL;
     if (sc->cipher_list != NULL) {
-        if ((cipher_list = sk_SSL_CIPHER_dup(sc->cipher_list)) == NULL)
+        cipher_list = sk_SSL_CIPHER_dup(sc->cipher_list);
+        if (cipher_list == NULL
+            || !ssl_cipher_stack_canon(retsc, cipher_list)) {
+            sk_SSL_CIPHER_free(cipher_list);
             goto err;
-        /*
-         * SSL_dup() constructs the new object from the current SSL_CTX, which
-         * may differ from the source session_ctx after an SNI switch.
-         */
-        ssl_cipher_stack_canon(retsc, cipher_list);
+        }
     }
     sk_SSL_CIPHER_free(retsc->cipher_list);
     retsc->cipher_list = cipher_list;
 
     cipher_list = NULL;
     if (sc->cipher_list_by_id != NULL) {
-        if ((cipher_list = sk_SSL_CIPHER_dup(sc->cipher_list_by_id))
-            == NULL)
+        cipher_list = sk_SSL_CIPHER_dup(sc->cipher_list_by_id);
+        if (cipher_list == NULL
+            || !ssl_cipher_stack_canon(retsc, cipher_list)) {
+            sk_SSL_CIPHER_free(cipher_list);
             goto err;
-        ssl_cipher_stack_canon(retsc, cipher_list);
+        }
     }
     sk_SSL_CIPHER_free(retsc->cipher_list_by_id);
     retsc->cipher_list_by_id = cipher_list;
@@ -5966,24 +5983,9 @@ SSL_CTX *SSL_get_SSL_CTX(const SSL *ssl)
     return ssl->ctx;
 }
 
-static void ssl_provider_ctx_switch_error(SSL_CONNECTION *sc)
-{
-    if (SSL_in_init(SSL_CONNECTION_GET_SSL(sc))
-        || ossl_statem_get_in_handshake(sc)
-        || sc->ext.early_data_session != NULL)
-        SSLfatal(sc, SSL_AD_HANDSHAKE_FAILURE, SSL_R_NO_SHARED_CIPHER);
-    else
-        ERR_raise(ERR_LIB_SSL, SSL_R_NO_SHARED_CIPHER);
-}
-
 SSL_CTX *SSL_set_SSL_CTX(SSL *ssl, SSL_CTX *ctx)
 {
-    CERT *new_cert, *old_cert;
-    SSL_CTX *old_ctx;
-    const SSL_CIPHER *cipher, *canonical[2] = { NULL, NULL };
-    size_t canonical_count = 0, i, old_sid_ctx_length;
-    unsigned char old_sid_ctx[SSL_MAX_SID_CTX_LENGTH];
-    int canonical_secop[2] = { 0, 0 };
+    CERT *new_cert;
     SSL_CONNECTION *sc = SSL_CONNECTION_FROM_SSL_ONLY(ssl);
 
     /* TODO(QUIC FUTURE): Add support for QUIC */
@@ -5994,60 +5996,6 @@ SSL_CTX *SSL_set_SSL_CTX(SSL *ssl, SSL_CTX *ctx)
         return ssl->ctx;
     if (ctx == NULL)
         ctx = sc->session_ctx;
-    if (sc->provider_ctx_switching) {
-        ssl_provider_ctx_switch_error(sc);
-        return NULL;
-    }
-
-    cipher = sc->s3.tmp.new_cipher;
-    if (cipher != NULL && cipher->origin == SSL_CIPHER_ORIGIN_PROVIDER) {
-        canonical[canonical_count] = ssl_cipher_canon_for_ctx(sc, ctx, cipher);
-        if (canonical[canonical_count] == NULL) {
-            ssl_provider_ctx_switch_error(sc);
-            return NULL;
-        }
-        canonical_secop[canonical_count++] = sc->server
-            ? SSL_SECOP_CIPHER_SHARED
-            : SSL_SECOP_CIPHER_CHECK;
-    } else if (cipher == NULL && sc->session != NULL
-        && sc->session->cipher != NULL
-        && sc->session->cipher->origin == SSL_CIPHER_ORIGIN_PROVIDER) {
-        canonical[canonical_count] = ssl_cipher_canon_for_ctx(sc, ctx,
-            sc->session->cipher);
-        if (canonical[canonical_count] == NULL) {
-            ssl_provider_ctx_switch_error(sc);
-            return NULL;
-        }
-        canonical_secop[canonical_count++] = sc->server
-            ? SSL_SECOP_CIPHER_SHARED
-            : SSL_SECOP_CIPHER_CHECK;
-    }
-    if (sc->ext.early_data_session != NULL
-        && sc->ext.early_data_session->cipher != NULL
-        && sc->ext.early_data_session->cipher->origin
-            == SSL_CIPHER_ORIGIN_PROVIDER) {
-        const SSL_CIPHER *early = ssl_cipher_canon_for_ctx(sc, ctx,
-            sc->ext.early_data_session->cipher);
-        int early_secop = sc->server ? SSL_SECOP_CIPHER_SHARED
-                                     : SSL_SECOP_CIPHER_SUPPORTED;
-        int found = 0;
-
-        if (early == NULL) {
-            ssl_provider_ctx_switch_error(sc);
-            return NULL;
-        }
-        for (i = 0; i < canonical_count; i++) {
-            if (canonical[i] == early && canonical_secop[i] == early_secop) {
-                found = 1;
-                break;
-            }
-        }
-        if (!found) {
-            canonical[canonical_count] = early;
-            canonical_secop[canonical_count++] = early_secop;
-        }
-    }
-
     new_cert = ssl_cert_dup(ctx->cert);
     if (new_cert == NULL)
         goto err;
@@ -6065,44 +6013,21 @@ SSL_CTX *SSL_set_SSL_CTX(SSL *ssl, SSL_CTX *ctx)
     if (!SSL_CTX_up_ref(ctx))
         goto err;
 
-    old_cert = sc->cert;
-    old_ctx = ssl->ctx;
-    old_sid_ctx_length = sc->sid_ctx_length;
-    memcpy(old_sid_ctx, sc->sid_ctx, sizeof(old_sid_ctx));
-
     /*
      * If the session ID context matches that of the parent SSL_CTX,
      * inherit it from the new SSL_CTX as well. If however the context does
      * not match (i.e., it was set per-ssl with SSL_set_session_id_context),
      * leave it unchanged.
      */
-    if ((old_ctx != NULL) && (sc->sid_ctx_length == old_ctx->sid_ctx_length) && (memcmp(sc->sid_ctx, old_ctx->sid_ctx, sc->sid_ctx_length) == 0)) {
+    if ((ssl->ctx != NULL) && (sc->sid_ctx_length == ssl->ctx->sid_ctx_length) && (memcmp(sc->sid_ctx, ssl->ctx->sid_ctx, sc->sid_ctx_length) == 0)) {
         sc->sid_ctx_length = ctx->sid_ctx_length;
         memcpy(&sc->sid_ctx, &ctx->sid_ctx, sizeof(sc->sid_ctx));
     }
 
+    ssl_cert_free(sc->cert);
     sc->cert = new_cert;
+    SSL_CTX_free(ssl->ctx); /* decrement reference count */
     ssl->ctx = ctx;
-
-    sc->provider_ctx_switching = 1;
-    for (i = 0; i < canonical_count; i++) {
-        if (!ssl_security(sc, canonical_secop[i], canonical[i]->strength_bits, 0,
-                (void *)canonical[i])) {
-            sc->provider_ctx_switching = 0;
-            ssl->ctx = old_ctx;
-            sc->cert = old_cert;
-            sc->sid_ctx_length = old_sid_ctx_length;
-            memcpy(sc->sid_ctx, old_sid_ctx, sizeof(sc->sid_ctx));
-            SSL_CTX_free(ctx);
-            ssl_cert_free(new_cert);
-            ssl_provider_ctx_switch_error(sc);
-            return NULL;
-        }
-    }
-    sc->provider_ctx_switching = 0;
-
-    ssl_cert_free(old_cert);
-    SSL_CTX_free(old_ctx); /* decrement reference count */
 
     return ssl->ctx;
 
