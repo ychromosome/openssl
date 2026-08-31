@@ -1882,16 +1882,13 @@ char *SSL_CIPHER_description(const SSL_CIPHER *cipher, char *buf, int len)
 {
     const char *ver;
     const char *kx, *au, *enc, *mac;
+    size_t name_len, enc_len, alloc_len;
     uint32_t alg_mkey, alg_auth, alg_enc, alg_mac;
+    int allocated = 0, written;
     static const char *const format = "%-30s %-7s Kx=%-8s Au=%-5s Enc=%-22s Mac=%-4s\n";
 
-    if (buf == NULL) {
-        len = 128;
-        if ((buf = OPENSSL_malloc(len)) == NULL)
-            return NULL;
-    } else if (len < 128) {
+    if (buf != NULL && len < 128)
         return NULL;
-    }
 
     alg_mkey = cipher->algorithm_mkey;
     alg_auth = cipher->algorithm_auth;
@@ -2088,7 +2085,26 @@ char *SSL_CIPHER_description(const SSL_CIPHER *cipher, char *buf, int len)
         break;
     }
 
-    snprintf(buf, len, format, cipher->name, ver, kx, au, enc, mac);
+    if (buf == NULL) {
+        name_len = strlen(cipher->name);
+        enc_len = strlen(enc);
+        if (name_len > (size_t)INT_MAX - 128
+            || enc_len > (size_t)INT_MAX - 128 - name_len)
+            return NULL;
+        alloc_len = name_len + enc_len + 128;
+        len = (int)alloc_len;
+        buf = OPENSSL_malloc(alloc_len);
+        if (buf == NULL)
+            return NULL;
+        allocated = 1;
+    }
+
+    written = snprintf(buf, len, format, cipher->name, ver, kx, au, enc, mac);
+    if (written < 0 || written >= len) {
+        if (allocated)
+            OPENSSL_free(buf);
+        return NULL;
+    }
 
     return buf;
 }
