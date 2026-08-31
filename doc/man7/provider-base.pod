@@ -640,7 +640,8 @@ Providers that do not implement the capability, supported empty capabilities,
 and entries whose AEAD or digest cannot be fetched are ignored. Malformed
 entries, collisions, profile violations, and providers that abort after
 supplying an entry cause context creation to fail. Libssl allocation and
-registry failures also abort context creation.
+registry failures also abort context creation. An SSL_CTX accepts at most 128
+provider-defined ciphersuites.
 
 Provider-defined ciphersuites are not added to the default ciphersuite list and
 must be selected by name. Their code points require deployment coordination.
@@ -665,10 +666,10 @@ This capability supports the existing stream TLS 1.3 record profile: a
 validates metadata only. Successful context creation does not guarantee that
 record setup or the first record operation will succeed.
 
-A provider-defined AEAD must refuse an encryption that would exceed an
-algorithm-specific per-key sending limit. Cipher failure is fatal to the record
-layer. This capability does not expose a threshold for proactive KeyUpdate; an
-AEAD that cannot enforce its limit by refusing encryption is unsupported.
+Libssl permits at most 2^24 encrypted records under one provider-suite traffic
+key. KeyUpdate installs a new traffic key and resets this count. An AEAD with a
+lower algorithm-specific limit must refuse encryption before that limit;
+cipher failure is fatal to the record layer.
 
 =head3 "TLS-GROUP" Capability
 

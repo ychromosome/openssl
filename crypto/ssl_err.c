@@ -542,6 +542,7 @@ static const ERR_STRING_DATA SSL_str_reasons[] = {
         "tls session id too long" },
     { ERR_PACK(ERR_LIB_SSL, 0, SSL_R_TOO_MANY_KEY_UPDATES),
         "too many key updates" },
+    { ERR_PACK(ERR_LIB_SSL, 0, SSL_R_TOO_MANY_RECORDS), "too many records" },
     { ERR_PACK(ERR_LIB_SSL, 0, SSL_R_TOO_MANY_WARN_ALERTS),
         "too many warn alerts" },
     { ERR_PACK(ERR_LIB_SSL, 0, SSL_R_TOO_MUCH_EARLY_DATA),

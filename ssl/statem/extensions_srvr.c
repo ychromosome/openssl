@@ -1549,11 +1549,6 @@ int tls_parse_ctos_psk(SSL_CONNECTION *s, PACKET *pkt, unsigned int context,
             ext = 0;
         }
 
-        md = ssl_cipher_get_evp_md(sctx, sess->cipher);
-        if (md == NULL) {
-            SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_INTERNAL_ERROR);
-            goto err;
-        }
         if (!ssl_cipher_has_same_digest(sess->cipher,
                 s->s3.tmp.new_cipher)) {
             /* The ciphersuite is not compatible with this session. */
@@ -1567,6 +1562,12 @@ int tls_parse_ctos_psk(SSL_CONNECTION *s, PACKET *pkt, unsigned int context,
              */
             s->ext.ticket_expected = 1;
             continue;
+        }
+        md = ssl_cipher_get_evp_md(sctx,
+            ext ? s->s3.tmp.new_cipher : sess->cipher);
+        if (md == NULL) {
+            SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_INTERNAL_ERROR);
+            goto err;
         }
         if (s->ext.early_data_ok
             && !ssl_session_cipher_is_early_data_admissible(s, sess))

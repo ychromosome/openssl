@@ -232,6 +232,7 @@ struct provider_ctx_data_st {
 #ifndef OPENSSL_NO_TLS1_3
 #define TLS_CIPHERSUITE_NAME_MAX_LEN 255
 #define TLS_CIPHERSUITE_ALGORITHM_NAME_MAX_LEN 255
+#define TLS_PROVIDER_CIPHERSUITE_MAX 128
 
 struct provider_ciphersuite_data_st {
     SSL_CTX *ctx;
@@ -355,6 +356,12 @@ static int add_provider_ciphersuite(const OSSL_PARAM params[], void *data)
     EVP_MD *digest = NULL;
 
     pcd->callbacks_seen++;
+
+    if (sk_SSL_CIPHER_num(ctx->provider_ciphersuites)
+        >= TLS_PROVIDER_CIPHERSUITE_MAX) {
+        reason = "too many provider ciphersuites";
+        goto invalid;
+    }
 
     if (!tls_ciphersuite_get_string_param(params,
             OSSL_CAPABILITY_TLS_CIPHERSUITE_NAME, name, sizeof(name))

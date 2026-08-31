@@ -72,9 +72,12 @@ OpenSSL 4.1
    SSL_SESSION_set_cipher() may also fail when retaining a provider-defined
    ciphersuite. Explicit stream TLS 1.3 external-PSK callbacks may use such a
    session, including for 0-RTT, without making it ordinarily resumable. DTLS
-   and QUIC reject provider-suite PSK sessions. Provider AEAD implementations
-   must refuse encryption that would exceed algorithm-specific per-key limits.
-   Provider suites do not use kTLS.
+   and QUIC reject provider-suite PSK sessions. Libssl permits at most 2^24
+   encrypted records per provider-suite traffic key. Provider AEADs must
+   refuse encryption earlier when their algorithm-specific limit is lower.
+   Provider suites do not use kTLS. Each SSL_CTX accepts at most 128 provider
+   suites; duplicate provider wire IDs in a peer list are discarded before
+   selection.
 
    *Martin Wolf*
 
