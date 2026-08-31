@@ -660,7 +660,11 @@ preferences do not apply. Provider-defined ciphersuites do not use kTLS.
 Sessions that have used a provider-defined ciphersuite are not resumable,
 cacheable or serialisable and do not produce session tickets. An application
 cannot supply such a session through external-PSK callbacks. Provider-backed
-external PSK and 0-RTT are not supported.
+external PSK and 0-RTT are not supported. A selected provider-defined
+ciphersuite accepts neither tickets nor external PSKs, including built-in
+sessions with a compatible transcript digest. A server ignores such PSK
+offers and continues with a full handshake. A client rejects a server that
+selects a PSK together with a provider-defined ciphersuite.
 
 This capability supports the existing stream TLS 1.3 record profile: a
 12-byte IV, 16-byte tag, and SHA-256 or SHA-384 transcript digest. Discovery

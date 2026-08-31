@@ -1350,6 +1350,14 @@ int tls_parse_ctos_psk(SSL_CONNECTION *s, PACKET *pkt, unsigned int context,
         == 0)
         return 1;
 
+    /* Provider ciphersuites always require a full handshake. */
+    if (s->s3.tmp.new_cipher != NULL
+        && s->s3.tmp.new_cipher->origin == SSL_CIPHER_ORIGIN_PROVIDER) {
+        s->ext.early_data_ok = 0;
+        s->ext.ticket_expected = 0;
+        return 1;
+    }
+
     if (!PACKET_get_length_prefixed_2(pkt, &identities)) {
         SSLfatal(s, SSL_AD_DECODE_ERROR, SSL_R_BAD_EXTENSION);
         return 0;
