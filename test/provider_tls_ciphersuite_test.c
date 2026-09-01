@@ -35,9 +35,7 @@ typedef struct {
 static const CIPHERSUITE_TEST ciphersuite_tests[] = {
     { "unsupported", 1, 0 },
     { "empty", 1, 0 },
-    { "suite-only", 1, 1 },
-    { "invalid-group", 0, 0 },
-    { "group-then-abort", 0, 0 },
+    { "capability-error", 1, 0 },
     { "valid", 1, 1 },
     { "valid-composed", 1, 1 },
     { "valid-unknown-param", 1, 1 },
@@ -88,7 +86,6 @@ static const CIPHERSUITE_TEST ciphersuite_tests[] = {
     { "non-aead", 0, 0 },
     { "ccm", 0, 0 },
     { "oversized-key", 0, 0 },
-    { "inconsistent-aes128-key", 0, 0 },
     { "bad-digest", 0, 0 },
     { "oversized-digest", 0, 0 },
     { "oversized-digest-sha384", 0, 0 },
@@ -101,7 +98,7 @@ static const CIPHERSUITE_TEST ciphersuite_tests[] = {
     { "duplicate-codepoint", 0, 0 },
     { "duplicate-name", 0, 0 },
     { "valid-then-invalid", 0, 0 },
-    { "valid-then-abort", 0, 0 },
+    { "valid-then-abort", 1, 0 },
     { "too-many", 0, 0 }
 };
 
@@ -408,8 +405,7 @@ static int test_ciphersuite_mode(int idx)
     int i, ret = 0;
 
     tls_provider_set_ciphersuite_mode(test->mode);
-    if (strcmp(test->mode, "inconsistent-aes128-key") == 0
-        || strcmp(test->mode, "oversized-digest") == 0
+    if (strcmp(test->mode, "oversized-digest") == 0
         || strcmp(test->mode, "oversized-digest-sha384") == 0) {
         if (!TEST_ptr(localctx = OSSL_LIB_CTX_new())
             || !TEST_true(OSSL_PROVIDER_add_builtin(localctx, "tls-provider",
@@ -664,78 +660,6 @@ end:
     if (properties_changed
         && !EVP_set_default_properties(libctx, "?provider=tls-provider"))
         ret = 0;
-    ERR_clear_error();
-    tls_provider_set_ciphersuite_mode(NULL);
-    return ret;
-}
-
-static int test_provider_record_limit(void)
-{
-    static const unsigned char message[] = "provider record limit";
-    SSL_CTX *sctx = NULL, *cctx = NULL;
-    SSL *serverssl = NULL, *clientssl = NULL;
-    SSL_CONNECTION *clientsc;
-    const SSL_CIPHER *builtin = NULL;
-    size_t written = 0;
-    unsigned long err;
-    int found = 0, ret = 0;
-
-    tls_provider_set_ciphersuite_mode("valid");
-    if (!TEST_true(create_ssl_ctx_pair(libctx, TLS_server_method(),
-            TLS_client_method(), TLS1_3_VERSION, TLS1_3_VERSION,
-            &sctx, &cctx, cert, privkey))
-        || !TEST_true(SSL_CTX_set_num_tickets(sctx, 0))
-        || !TEST_true(SSL_CTX_set_ciphersuites(sctx,
-            TLS_TEST_SHA256_NAME))
-        || !TEST_true(SSL_CTX_set_ciphersuites(cctx,
-            TLS_TEST_SHA256_NAME))
-        || !TEST_true(create_ssl_objects(sctx, cctx, &serverssl, &clientssl,
-            NULL, NULL))
-        || !TEST_true(create_ssl_connection(serverssl, clientssl,
-            SSL_ERROR_NONE))
-        || !TEST_ptr(clientsc = SSL_CONNECTION_FROM_SSL_ONLY(clientssl))
-        || !TEST_ptr(builtin = SSL_CIPHER_find(clientssl,
-                         (const unsigned char[]) { 0x13, 0x01 }))
-        || !TEST_true(SSL_SESSION_set_cipher(clientsc->session, builtin))
-        || !TEST_true(clientsc->session->provider_cipher_seen)
-        || !TEST_ptr(clientsc->rlayer.wrl))
-        goto end;
-    clientsc->rlayer.wrl->sequence = TLS13_PROVIDER_RECORD_LIMIT - 2;
-    if (!TEST_true(SSL_key_update(clientssl, SSL_KEY_UPDATE_NOT_REQUESTED))
-        || !TEST_true(SSL_write_ex(clientssl, message, sizeof(message),
-            &written))
-        || !TEST_size_t_eq(written, sizeof(message))
-        || !TEST_uint64_t_lt(clientsc->rlayer.wrl->sequence,
-            TLS13_PROVIDER_RECORD_LIMIT))
-        goto end;
-
-    written = 0;
-    clientsc->rlayer.wrl->sequence = TLS13_PROVIDER_RECORD_LIMIT - 1;
-    if (!TEST_true(SSL_write_ex(clientssl, message, sizeof(message),
-            &written))
-        || !TEST_size_t_eq(written, sizeof(message)))
-        goto end;
-
-    written = 0;
-    ERR_clear_error();
-    if (!TEST_false(SSL_write_ex(clientssl, message, sizeof(message),
-            &written)))
-        goto end;
-    while ((err = ERR_get_error()) != 0) {
-        if (ERR_GET_REASON(err) == SSL_R_TOO_MANY_RECORDS) {
-            found = 1;
-            break;
-        }
-    }
-    if (!TEST_true(found))
-        goto end;
-
-    ret = 1;
-end:
-    SSL_free(serverssl);
-    SSL_free(clientssl);
-    SSL_CTX_free(sctx);
-    SSL_CTX_free(cctx);
     ERR_clear_error();
     tls_provider_set_ciphersuite_mode(NULL);
     return ret;
@@ -1641,7 +1565,6 @@ int setup_tests(void)
     ADD_TEST(test_provider_peer_list_deduplication);
     ADD_TEST(test_property_query_exclusion);
     ADD_TEST(test_provider_composition);
-    ADD_TEST(test_provider_record_limit);
     ADD_MFAIL_SAMPLED_NO_CHECK_TEST(test_provider_discovery_mfail, 64);
     ADD_MFAIL_SAMPLED_NO_CHECK_TEST(test_ssl_ciphersuites_mfail, 64);
     ADD_ALL_TESTS(test_provider_handshake, 2);

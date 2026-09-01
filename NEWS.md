@@ -37,8 +37,7 @@ OpenSSL 4.1
   * Providers can add explicitly selected TLS 1.3 ciphersuites through the
     `TLS-CIPHERSUITE` capability. Sessions that have used such a suite cannot
     be resumed, cached, serialised or ticketed. Provider suites are unavailable
-    for kTLS, DTLS and QUIC, and cannot be negotiated with tickets or external
-    PSKs.
+    for kTLS, DTLS and QUIC.
 
   * API calls `CRYPTO_atomic_load_ptr`, `CRYPTO_atomic_store_ptr`, and
     `CRYPTO_atomic_cmp_exch_ptr` have been added.

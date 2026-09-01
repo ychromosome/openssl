@@ -1770,13 +1770,6 @@ static int set_client_ciphersuite(SSL_CONNECTION *s,
         return 0;
     }
 
-    if (SSL_CONNECTION_IS_VERSION13(s) && s->hit
-        && c->origin == SSL_CIPHER_ORIGIN_PROVIDER) {
-        SSLfatal(s, SSL_AD_ILLEGAL_PARAMETER,
-            SSL_R_PROVIDER_CIPHERSUITE_SESSION_UNSUPPORTED);
-        return 0;
-    }
-
     /*
      * Depending on the session caching (internal/external), the cipher
      * and/or cipher_id values may not be set. Make sure that cipher_id is

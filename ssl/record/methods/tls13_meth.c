@@ -178,17 +178,6 @@ static int tls13_cipher(OSSL_RECORD_LAYER *rl, TLS_RL_RECORD *recs,
         rec->length -= rl->taglen;
     }
 
-    if (sending && !isdtls
-        && rl->sequence >= TLS13_PROVIDER_RECORD_LIMIT) {
-        SSL_CONNECTION *s = rl->cbarg;
-
-        if (s != NULL && s->session != NULL
-            && s->session->provider_cipher_seen) {
-            RLAYERfatal(rl, SSL_AD_INTERNAL_ERROR, SSL_R_TOO_MANY_RECORDS);
-            return 0;
-        }
-    }
-
     /* Set up nonce: part of static IV followed by sequence number */
     if (nonce_len < SEQ_NUM_SIZE) {
         /* Should not happen */

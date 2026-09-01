@@ -71,12 +71,9 @@ OpenSSL 4.1
    SSL_set_session(), i2d_SSL_SESSION() and SSL_new_session_ticket() fail.
    SSL_SESSION_set_cipher() rejects provider-defined ciphersuites.
    External-PSK callbacks reject such sessions; provider-backed external PSK
-   and 0-RTT are not supported. Provider suites cannot be negotiated with
-   tickets or external PSKs, including built-in same-digest sessions; those
-   offers fall back to a full handshake. Libssl permits at most 2^24
-   encrypted records per provider-suite traffic key. Provider AEADs must refuse
-   encryption earlier when their algorithm-specific limit is lower. Provider
-   suites do not use kTLS. Each SSL_CTX accepts at most 128 provider suites;
+   and 0-RTT are not supported. Provider AEADs must enforce their own per-key
+   record limits. Provider suites do not use kTLS. Each SSL_CTX accepts at most
+   128 provider suites;
    duplicate provider wire IDs in a peer list are discarded before selection.
 
    *Martin Wolf*

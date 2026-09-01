@@ -5169,8 +5169,7 @@ void ssl_update_cache(SSL_CONNECTION *s, int mode)
          *   session timeout events
          * - SSL_OP_NO_TICKET is set in which case it is a stateful ticket
          */
-        if (!s->session->provider_cipher_seen
-            && (i & SSL_SESS_CACHE_NO_INTERNAL_STORE) == 0
+        if ((i & SSL_SESS_CACHE_NO_INTERNAL_STORE) == 0
             && (!SSL_CONNECTION_IS_VERSION13(s)
                 || !s->server
                 || (s->max_early_data > 0

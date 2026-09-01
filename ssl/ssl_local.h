@@ -467,9 +467,6 @@ typedef enum {
 #define SSL_CIPHER_ORIGIN_STATIC 0
 #define SSL_CIPHER_ORIGIN_PROVIDER 1
 
-/* Conservative per-key write-record limit for provider TLS 1.3 suites. */
-#define TLS13_PROVIDER_RECORD_LIMIT (UINT64_C(1) << 24)
-
 /* used to hold info on the particular ciphers used */
 struct ssl_cipher_st {
     uint32_t valid;
@@ -619,7 +616,7 @@ struct ssl_session_st {
      * mirroring not_resumable just above, for the same reason.
      */
     int psk_external;
-    /* Copied by ssl_session_dup_intern(); not encoded in ASN.1. */
+    /* Sticky provider provenance; copied by dup and not encoded in ASN.1. */
     int provider_cipher_seen;
     /* Peer raw public key, if available */
     EVP_PKEY *peer_rpk;
