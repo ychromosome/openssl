@@ -26,7 +26,7 @@ ignored.
 |-----------|------|------------|
 | `tls-ciphersuite-name` | UTF8 | Bytes 0x21--0x7e except colon, 1--255 bytes, unique ignoring case across built-in OpenSSL names, standard names and provider names |
 | `tls-ciphersuite-code-point` | unsigned integer | Nonzero 16-bit value, not GREASE, unique in the context and not used by a built-in suite |
-| `tls-ciphersuite-aead-name` | UTF8 | AEAD fetch name, 1--255 bytes; reported key length from 1 through `EVP_MAX_KEY_LENGTH`, 12-byte IV, block size 1, non-CCM; AES-128-GCM reports 16 bytes and AES-256-GCM or ChaCha20-Poly1305 reports 32 bytes |
+| `tls-ciphersuite-aead-name` | UTF8 | AEAD fetch name, 1--255 bytes; reported key length from 1 through `EVP_MAX_KEY_LENGTH`, 12-byte IV, block size 1, non-CCM |
 | `tls-ciphersuite-digest-name` | UTF8 | Fetch name of 1--255 bytes; SHA2-256 with 32-byte output or SHA2-384 with 48-byte output |
 | `tls-ciphersuite-security-bits` | unsigned integer | 128 or more; no greater than the AEAD key size |
 | `tls-ciphersuite-tag-length` | unsigned integer | 16 |
@@ -45,10 +45,9 @@ the first record operation will succeed. Libssl derives and supplies the key
 length reported by the fetched cipher; discovery does not prove that the
 cipher rejects other lengths.
 
-A provider suite is limited to 2^24 encrypted records per traffic key. An
-AEAD with a lower algorithm-specific limit must refuse encryption before that
-limit. Cipher failure is fatal to the record layer. KeyUpdate installs a new
-traffic key and resets the libssl counter.
+A provider AEAD must refuse encryption at its algorithm-specific per-key
+limit. Cipher failure is fatal to the record layer. This capability does not
+declare a threshold for proactive KeyUpdate.
 Provider suites do not use kTLS because offload would bypass the provider AEAD.
 
 Code points are not restricted to Private Use because an allocated suite may
@@ -67,13 +66,16 @@ Discovery
 Discovery runs during `SSL_CTX_new_ex()` for methods that can negotiate TLS
 1.3. A context accepts at most 128 provider descriptors. The owned descriptors
 are sorted by wire ID and a shallow name index is built for binary lookup. The
-registry is then immutable. A provider that does not implement the capability,
-or implements it with no entries, does not affect context creation.
+registry is then immutable. Existing providers return 0 both for unsupported
+capabilities and for errors. Libssl therefore treats an outer capability
+failure as unsupported, discards descriptors emitted by that provider, and
+discards errors raised by that query. A callback validation or allocation
+failure remains fatal.
 
-An entry whose AEAD or digest cannot be fetched under the context property
-query is skipped. A malformed entry, a collision, a profile violation, or a
-provider that aborts after supplying an entry causes context creation to fail.
-Allocation and registry failures are also fatal.
+Any entry whose AEAD or digest fetch fails under the context property query is
+skipped; fetch failures are not classified. A malformed entry, collision,
+profile violation, allocation failure or registry failure aborts context
+creation.
 Failing context creation prevents descriptor order from determining a partial
 registry.
 
@@ -108,11 +110,7 @@ provider-cipher and external-PSK markers but preserves any existing
 descriptor valid.
 
 External-PSK callbacks reject a session that has held a provider suite. This
-version does not support provider-backed external PSK or 0-RTT. A selected
-provider suite accepts neither tickets nor external PSKs, including built-in
-sessions with a compatible transcript digest. The server ignores such PSK
-offers and continues with a full handshake. The client rejects a server that
-selects a PSK together with a provider suite.
+version does not support provider-backed external PSK or 0-RTT.
 
 Public `SSL_CIPHER` pointers are borrowed. Values returned by
 `SSL_CIPHER_find()`, `SSL_get1_supported_ciphers()` and
@@ -131,6 +129,12 @@ property query.
 Context rebinding across different library contexts or property queries,
 provider-backed external PSK, and provider-backed 0-RTT require a separate
 design and review.
+
+Distinguishing an unavailable algorithm from an operational EVP fetch failure
+requires a generic fetch contract and maintainer agreement.
+
+A libssl-enforced record threshold requires per-suite metadata and a KeyUpdate
+policy.
 
 Peer cipher lists discard duplicate provider wire IDs before selection.
 Built-in duplicate handling is unchanged.

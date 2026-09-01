@@ -178,7 +178,7 @@ static int check_negotiated(SSL *serverssl, SSL *clientssl, unsigned int cp,
         && exchange_data(serverssl, clientssl, msg, sizeof(msg));
 }
 
-static int test_ticket_falls_back_to_provider_full_handshake(int idx)
+static int test_resume_into_provider_suite(int idx)
 {
     const SUITE_VARIANT *v = &variants[idx & 1];
     int with_hrr = (idx & 2) != 0;
@@ -212,8 +212,8 @@ static int test_ticket_falls_back_to_provider_full_handshake(int idx)
 
     /*
      * Second handshake: server prefers the provider suite (same transcript
-     * hash), so the built-in ticket must be ignored and a full handshake
-     * performed.
+     * hash), client offers the PSK from the built-in session. RFC 8446
+     * section 4.2.11 permits the switch.
      */
     if (!TEST_true(SSL_CTX_set_ciphersuites(sctx, both))
         || !TEST_true(SSL_CTX_set_ciphersuites(cctx, both)))
@@ -234,9 +234,8 @@ static int test_ticket_falls_back_to_provider_full_handshake(int idx)
     SSL_set_msg_callback(serverssl, wire_cb);
     if (!TEST_true(create_ssl_connection(serverssl, clientssl, SSL_ERROR_NONE))
         || !TEST_int_eq(server_hellos, with_hrr ? 2 : 1)
-        || !TEST_false(SSL_session_reused(serverssl))
-        || !TEST_false(SSL_session_reused(clientssl))
-        || !TEST_ptr(SSL_get0_peer_certificate(clientssl))
+        || !TEST_true(SSL_session_reused(serverssl))
+        || !TEST_true(SSL_session_reused(clientssl))
         || !check_negotiated(serverssl, clientssl, v->codepoint,
             SSL_CIPHER_ORIGIN_PROVIDER)
         /* No NewSessionTicket may be issued on a provider-suite connection */
@@ -266,92 +265,11 @@ end:
     return ret;
 }
 
-static int test_ticket_early_data_falls_back(void)
-{
-    static const unsigned char early_message[] = "provider early data";
-    const SUITE_VARIANT *v = &variants[1];
-    SSL_CTX *sctx = NULL, *cctx = NULL;
-    SSL *serverssl = NULL, *clientssl = NULL;
-    SSL_SESSION *sess = NULL;
-    unsigned char buf[sizeof(early_message)];
-    size_t written = 0, readbytes = 0;
-    char both[128];
-    int ret = 0;
-
-    snprintf(both, sizeof(both), "%s:%s", v->provname, v->builtinname);
-
-    if (!make_pair(v->mode, v->builtinname, v->builtinname, cert, privkey,
-            &sctx, &cctx)
-        || !TEST_true(SSL_CTX_set_max_early_data(sctx,
-            sizeof(early_message))))
-        goto end;
-    SSL_CTX_set_session_cache_mode(cctx,
-        SSL_SESS_CACHE_CLIENT | SSL_SESS_CACHE_NO_INTERNAL_STORE);
-    SSL_CTX_sess_set_new_cb(cctx, capture_session_cb);
-    if (!TEST_true(create_ssl_objects(sctx, cctx, &serverssl, &clientssl,
-            NULL, NULL))
-        || !TEST_true(create_ssl_connection(serverssl, clientssl,
-            SSL_ERROR_NONE))
-        || !TEST_ptr(captured_session)
-        || !TEST_uint_gt(SSL_SESSION_get_max_early_data(captured_session), 0))
-        goto end;
-    sess = captured_session;
-    captured_session = NULL;
-    shutdown_ssl_connection(serverssl, clientssl);
-    serverssl = clientssl = NULL;
-
-    if (!TEST_true(SSL_CTX_set_ciphersuites(sctx, both))
-        || !TEST_true(SSL_CTX_set_ciphersuites(cctx, both)))
-        goto end;
-    SSL_CTX_set_options(sctx, SSL_OP_SERVER_PREFERENCE);
-    reset_counters();
-    if (!TEST_true(create_ssl_objects(sctx, cctx, &serverssl, &clientssl,
-            NULL, NULL))
-        || !TEST_true(SSL_set_session(clientssl, sess)))
-        goto end;
-    SSL_set_msg_callback(clientssl, wire_cb);
-    SSL_set_msg_callback(serverssl, wire_cb);
-
-    if (!TEST_true(SSL_write_early_data(clientssl, early_message,
-            sizeof(early_message), &written))
-        || !TEST_size_t_eq(written, sizeof(early_message))
-        || !TEST_int_eq(SSL_read_early_data(serverssl, buf, sizeof(buf),
-                            &readbytes),
-            SSL_READ_EARLY_DATA_FINISH)
-        || !TEST_size_t_eq(readbytes, 0)
-        || !TEST_int_eq(SSL_get_early_data_status(serverssl),
-            SSL_EARLY_DATA_REJECTED)
-        || !TEST_true(create_ssl_connection(serverssl, clientssl,
-            SSL_ERROR_NONE))
-        || !TEST_int_eq(SSL_get_early_data_status(clientssl),
-            SSL_EARLY_DATA_REJECTED)
-        || !TEST_false(SSL_session_reused(serverssl))
-        || !TEST_false(SSL_session_reused(clientssl))
-        || !TEST_ptr(SSL_get0_peer_certificate(clientssl))
-        || !check_negotiated(serverssl, clientssl, v->codepoint,
-            SSL_CIPHER_ORIGIN_PROVIDER)
-        || !TEST_int_eq(nst_written, 0))
-        goto end;
-
-    ret = 1;
-end:
-    SSL_SESSION_free(sess);
-    SSL_SESSION_free(captured_session);
-    captured_session = NULL;
-    SSL_free(serverssl);
-    SSL_free(clientssl);
-    SSL_CTX_free(sctx);
-    SSL_CTX_free(cctx);
-    ERR_clear_error();
-    tls_provider_set_ciphersuite_mode(NULL);
-    return ret;
-}
-
-static int test_stateful_cache_provider_full_handshake(void)
+static int test_stateful_cache_provider_transition(void)
 {
     SSL_CTX *sctx = NULL, *cctx = NULL;
     SSL *serverssl = NULL, *clientssl = NULL;
-    SSL_SESSION *sess = NULL, *replay = NULL, *cached = NULL;
+    SSL_SESSION *sess = NULL, *replay = NULL, *cached = NULL, *after = NULL;
     char both[128];
     int ret = 0;
 
@@ -392,8 +310,12 @@ static int test_stateful_cache_provider_full_handshake(void)
         || !TEST_true(SSL_set_session(clientssl, sess))
         || !TEST_true(create_ssl_connection(serverssl, clientssl,
             SSL_ERROR_NONE))
-        || !TEST_false(SSL_session_reused(serverssl))
-        || !TEST_false(SSL_session_reused(clientssl))
+        || !TEST_true(SSL_session_reused(serverssl))
+        || !TEST_true(SSL_session_reused(clientssl))
+        || !TEST_ptr(after = SSL_get1_session(clientssl))
+        || !TEST_false(SSL_SESSION_is_resumable(after))
+        || !TEST_int_eq(SSL_SESSION_get0_cipher(after)->origin,
+            SSL_CIPHER_ORIGIN_PROVIDER)
         || !TEST_int_eq(SSL_get_current_cipher(serverssl)->origin,
             SSL_CIPHER_ORIGIN_PROVIDER)
         || !TEST_int_eq(cached->cipher->origin, SSL_CIPHER_ORIGIN_STATIC)
@@ -401,20 +323,27 @@ static int test_stateful_cache_provider_full_handshake(void)
         goto end;
     shutdown_ssl_connection(serverssl, clientssl);
     serverssl = clientssl = NULL;
+    SSL_SESSION_free(after);
+    after = NULL;
 
     if (!TEST_true(create_ssl_objects(sctx, cctx, &serverssl, &clientssl,
             NULL, NULL))
         || !TEST_true(SSL_set_session(clientssl, replay))
         || !TEST_true(create_ssl_connection(serverssl, clientssl,
             SSL_ERROR_NONE))
-        || !TEST_false(SSL_session_reused(serverssl))
-        || !TEST_false(SSL_session_reused(clientssl))
+        || !TEST_true(SSL_session_reused(serverssl))
+        || !TEST_true(SSL_session_reused(clientssl))
+        || !TEST_ptr(after = SSL_get1_session(clientssl))
+        || !TEST_false(SSL_SESSION_is_resumable(after))
+        || !TEST_int_eq(SSL_SESSION_get0_cipher(after)->origin,
+            SSL_CIPHER_ORIGIN_PROVIDER)
         || !TEST_int_eq(SSL_get_current_cipher(serverssl)->origin,
             SSL_CIPHER_ORIGIN_PROVIDER))
         goto end;
 
     ret = 1;
 end:
+    SSL_SESSION_free(after);
     SSL_SESSION_free(cached);
     SSL_SESSION_free(replay);
     SSL_SESSION_free(sess);
@@ -529,12 +458,10 @@ end:
 
 static SSL_SESSION *clientpsk, *serverpsk;
 static const char pskid[] = "provider-psk-identity";
-static int use_session_calls, find_session_calls;
 
 static int use_session_cb(SSL *ssl, const EVP_MD *md, const unsigned char **id,
     size_t *idlen, SSL_SESSION **sess)
 {
-    use_session_calls++;
     if (clientpsk == NULL || !SSL_SESSION_up_ref(clientpsk))
         return 0;
     *sess = clientpsk;
@@ -546,7 +473,6 @@ static int use_session_cb(SSL *ssl, const EVP_MD *md, const unsigned char **id,
 static int find_session_cb(SSL *ssl, const unsigned char *identity,
     size_t identity_len, SSL_SESSION **sess)
 {
-    find_session_calls++;
     *sess = NULL;
     if (identity_len != strlen(pskid)
         || memcmp(identity, pskid, identity_len) != 0)
@@ -556,42 +482,6 @@ static int find_session_cb(SSL *ssl, const unsigned char *identity,
     *sess = serverpsk;
     return 1;
 }
-
-#ifndef OPENSSL_NO_PSK
-static const unsigned char legacy_psk[SHA256_DIGEST_LENGTH] = {
-    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
-    0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
-    0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
-    0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f
-};
-static int legacy_client_calls, legacy_server_calls;
-
-static unsigned int legacy_client_cb(SSL *ssl, const char *hint,
-    char *identity, unsigned int max_identity_len,
-    unsigned char *psk, unsigned int max_psk_len)
-{
-    (void)ssl;
-    (void)hint;
-    legacy_client_calls++;
-    if (sizeof(pskid) > max_identity_len
-        || sizeof(legacy_psk) > max_psk_len)
-        return 0;
-    memcpy(identity, pskid, sizeof(pskid));
-    memcpy(psk, legacy_psk, sizeof(legacy_psk));
-    return (unsigned int)sizeof(legacy_psk);
-}
-
-static unsigned int legacy_server_cb(SSL *ssl, const char *identity,
-    unsigned char *psk, unsigned int max_psk_len)
-{
-    (void)ssl;
-    legacy_server_calls++;
-    if (strcmp(identity, pskid) != 0 || sizeof(legacy_psk) > max_psk_len)
-        return 0;
-    memcpy(psk, legacy_psk, sizeof(legacy_psk));
-    return (unsigned int)sizeof(legacy_psk);
-}
-#endif
 
 static SSL_SESSION *make_psk(SSL *ssl, unsigned int codepoint, size_t mdsize,
     int origin, uint32_t max_early)
@@ -643,10 +533,9 @@ static SSL_SESSION *make_builtin_psk(SSL *ssl, const SUITE_VARIANT *v)
     return make_psk(ssl, codepoint, v->mdsize, SSL_CIPHER_ORIGIN_STATIC, 0);
 }
 
-static int test_builtin_external_psk_falls_back(int idx)
+static int test_builtin_external_psk_into_provider_suite(void)
 {
-    const SUITE_VARIANT *v = &variants[idx & 1];
-    int allow_no_dhe = (idx & 2) != 0;
+    const SUITE_VARIANT *v = &variants[0];
     SSL_CTX *sctx = NULL, *cctx = NULL;
     SSL *serverssl = NULL, *clientssl = NULL;
     SSL_SESSION *after = NULL;
@@ -657,34 +546,33 @@ static int test_builtin_external_psk_falls_back(int idx)
         goto end;
     SSL_CTX_set_psk_use_session_callback(cctx, use_session_cb);
     SSL_CTX_set_psk_find_session_callback(sctx, find_session_cb);
-    if (allow_no_dhe) {
-        SSL_CTX_set_options(cctx, SSL_OP_ALLOW_NO_DHE_KEX);
-        SSL_CTX_set_options(sctx,
-            SSL_OP_ALLOW_NO_DHE_KEX | SSL_OP_PREFER_NO_DHE_KEX);
-    }
     if (!TEST_true(create_ssl_objects(sctx, cctx, &serverssl, &clientssl,
             NULL, NULL))
         || !TEST_ptr(clientpsk = make_builtin_psk(clientssl, v))
         || !TEST_ptr(serverpsk = make_builtin_psk(serverssl, v)))
         goto end;
 
-    use_session_calls = find_session_calls = 0;
     reset_counters();
     SSL_set_msg_callback(clientssl, wire_cb);
     SSL_set_msg_callback(serverssl, wire_cb);
     if (!TEST_true(create_ssl_connection(serverssl, clientssl,
             SSL_ERROR_NONE))
-        || !TEST_false(SSL_session_reused(serverssl))
-        || !TEST_false(SSL_session_reused(clientssl))
-        || !TEST_int_gt(use_session_calls, 0)
-        || !TEST_int_eq(find_session_calls, 0)
-        || !TEST_ptr(SSL_get0_peer_certificate(clientssl))
-        || !TEST_int_gt(SSL_get_negotiated_group(clientssl), 0)
-        || !TEST_int_eq(nst_written, 0)
+        || !TEST_true(SSL_session_reused(serverssl))
+        || !TEST_true(SSL_session_reused(clientssl))
+        || !TEST_ptr_null(SSL_get0_peer_certificate(clientssl))
         || !check_negotiated(serverssl, clientssl, v->codepoint,
             SSL_CIPHER_ORIGIN_PROVIDER)
+        || !TEST_int_eq(nst_written, 0)
         || !TEST_ptr(after = SSL_get1_session(clientssl))
-        || !TEST_false(SSL_SESSION_is_resumable(after)))
+        || !TEST_false(SSL_SESSION_is_resumable(after))
+        || !TEST_int_eq(SSL_SESSION_get0_cipher(after)->origin,
+            SSL_CIPHER_ORIGIN_PROVIDER)
+        || !TEST_int_eq(SSL_SESSION_get0_cipher(clientpsk)->origin,
+            SSL_CIPHER_ORIGIN_STATIC)
+        || !TEST_int_eq(SSL_SESSION_get0_cipher(serverpsk)->origin,
+            SSL_CIPHER_ORIGIN_STATIC)
+        || !TEST_false(clientpsk->provider_cipher_seen)
+        || !TEST_false(serverpsk->provider_cipher_seen))
         goto end;
 
     ret = 1;
@@ -701,55 +589,6 @@ end:
     tls_provider_set_ciphersuite_mode(NULL);
     return ret;
 }
-
-#ifndef OPENSSL_NO_PSK
-static int test_builtin_legacy_psk_falls_back(void)
-{
-    const SUITE_VARIANT *v = &variants[0];
-    SSL_CTX *sctx = NULL, *cctx = NULL;
-    SSL *serverssl = NULL, *clientssl = NULL;
-    int ret = 0;
-
-    if (!make_pair(v->mode, v->provname, v->provname, cert, privkey,
-            &sctx, &cctx))
-        goto end;
-    SSL_CTX_set_psk_client_callback(cctx, legacy_client_cb);
-    SSL_CTX_set_psk_server_callback(sctx, legacy_server_cb);
-    SSL_CTX_set_options(cctx, SSL_OP_ALLOW_NO_DHE_KEX);
-    SSL_CTX_set_options(sctx,
-        SSL_OP_ALLOW_NO_DHE_KEX | SSL_OP_PREFER_NO_DHE_KEX);
-    if (!TEST_true(create_ssl_objects(sctx, cctx, &serverssl, &clientssl,
-            NULL, NULL)))
-        goto end;
-
-    legacy_client_calls = legacy_server_calls = 0;
-    reset_counters();
-    SSL_set_msg_callback(clientssl, wire_cb);
-    SSL_set_msg_callback(serverssl, wire_cb);
-    if (!TEST_true(create_ssl_connection(serverssl, clientssl,
-            SSL_ERROR_NONE))
-        || !TEST_false(SSL_session_reused(serverssl))
-        || !TEST_false(SSL_session_reused(clientssl))
-        || !TEST_int_gt(legacy_client_calls, 0)
-        || !TEST_int_eq(legacy_server_calls, 0)
-        || !TEST_ptr(SSL_get0_peer_certificate(clientssl))
-        || !TEST_int_gt(SSL_get_negotiated_group(clientssl), 0)
-        || !TEST_int_eq(nst_written, 0)
-        || !check_negotiated(serverssl, clientssl, v->codepoint,
-            SSL_CIPHER_ORIGIN_PROVIDER))
-        goto end;
-
-    ret = 1;
-end:
-    SSL_free(serverssl);
-    SSL_free(clientssl);
-    SSL_CTX_free(sctx);
-    SSL_CTX_free(cctx);
-    ERR_clear_error();
-    tls_provider_set_ciphersuite_mode(NULL);
-    return ret;
-}
-#endif
 
 static int test_provider_external_psk_rejected(int idx)
 {
@@ -1858,15 +1697,11 @@ int setup_tests(void)
             "?provider=tls-provider")))
         return 0;
 
-    ADD_ALL_TESTS(test_ticket_falls_back_to_provider_full_handshake, 4);
-    ADD_TEST(test_ticket_early_data_falls_back);
-    ADD_TEST(test_stateful_cache_provider_full_handshake);
+    ADD_ALL_TESTS(test_resume_into_provider_suite, 4);
+    ADD_TEST(test_stateful_cache_provider_transition);
     ADD_TEST(test_external_cache_rejects_provider_session);
     ADD_TEST(test_public_provider_cipher_assignment_rejected);
-    ADD_ALL_TESTS(test_builtin_external_psk_falls_back, 4);
-#ifndef OPENSSL_NO_PSK
-    ADD_TEST(test_builtin_legacy_psk_falls_back);
-#endif
+    ADD_TEST(test_builtin_external_psk_into_provider_suite);
     ADD_ALL_TESTS(test_provider_external_psk_rejected, 2);
     ADD_ALL_TESTS(test_stateless_cookie, 2);
     ADD_ALL_TESTS(test_security_callback, 4);

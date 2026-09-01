@@ -609,9 +609,8 @@ has an assigned code point.
 An AEAD fetch name of 1 to 255 bytes. The cipher must be non-CCM and report a
 positive key length no greater than B<EVP_MAX_KEY_LENGTH>, a 12-byte IV and a
 one-byte block size. Libssl derives and supplies the reported key length;
-discovery does not prove that the cipher rejects other lengths. AES-128-GCM
-must report 16 bytes. AES-256-GCM and ChaCha20-Poly1305 must report 32 bytes.
-The cipher must support the TLS 1.3 record operations used by libssl:
+discovery does not prove that the cipher rejects other lengths. The cipher
+must support the TLS 1.3 record operations used by libssl:
 setting the IV length and authentication tag, obtaining the authentication
 tag, AAD updates, and in-place encryption and decryption.
 
@@ -636,15 +635,14 @@ The AEAD and digest are fetched using the SSL_CTX library context and property
 query. They need not be implemented by the provider advertising the
 ciphersuite. The fetched objects are retained by the descriptor.
 Discovery occurs at SSL_CTX creation; the registry is then immutable.
-Providers that do not implement the capability, supported empty capabilities,
-and entries whose AEAD or digest cannot be fetched are ignored. Malformed
-entries, collisions, profile violations, and providers that abort after
-supplying an entry cause context creation to fail. Libssl allocation and
-registry failures also abort context creation. An SSL_CTX accepts at most 128
-provider-defined ciphersuites.
-
-A return of 0 before the first callback is treated as an unsupported
-capability. A return of 0 after a callback aborts context creation.
+Existing providers return 0 both for unsupported capabilities and for errors.
+Libssl therefore treats an outer capability failure as unsupported and
+discards descriptors and errors produced by that provider query. A callback
+validation or allocation failure remains fatal. Entries whose AEAD or digest
+fetch fails are skipped; fetch failures are not classified. Malformed entries,
+collisions, profile violations, allocation failures and registry failures
+abort context creation. An SSL_CTX accepts at most 128 provider-defined
+ciphersuites.
 
 Provider-defined ciphersuites are not added to the default ciphersuite list and
 must be selected by name. Their code points require deployment coordination.
@@ -660,21 +658,16 @@ preferences do not apply. Provider-defined ciphersuites do not use kTLS.
 Sessions that have used a provider-defined ciphersuite are not resumable,
 cacheable or serialisable and do not produce session tickets. An application
 cannot supply such a session through external-PSK callbacks. Provider-backed
-external PSK and 0-RTT are not supported. A selected provider-defined
-ciphersuite accepts neither tickets nor external PSKs, including built-in
-sessions with a compatible transcript digest. A server ignores such PSK
-offers and continues with a full handshake. A client rejects a server that
-selects a PSK together with a provider-defined ciphersuite.
+external PSK and 0-RTT are not supported.
 
 This capability supports the existing stream TLS 1.3 record profile: a
 12-byte IV, 16-byte tag, and SHA-256 or SHA-384 transcript digest. Discovery
 validates metadata only. Successful context creation does not guarantee that
 record setup or the first record operation will succeed.
 
-Libssl permits at most 2^24 encrypted records under one provider-suite traffic
-key. KeyUpdate installs a new traffic key and resets this count. An AEAD with a
-lower algorithm-specific limit must refuse encryption before that limit;
-cipher failure is fatal to the record layer.
+A provider AEAD must refuse encryption at its algorithm-specific per-key
+limit; cipher failure is fatal to the record layer. This capability does not
+declare a threshold for proactive KeyUpdate.
 
 =head3 "TLS-GROUP" Capability
 
@@ -768,10 +761,6 @@ TLSv1.2 is 0x0303 (771 decimal). A 0 indicates that there is no defined minimum
 or maximum. A -1 indicates that the group should not be used in that protocol.
 
 =back
-
-A return of 0 before the first callback is treated as an unsupported
-capability. A callback failure or a return of 0 after a callback aborts context
-creation.
 
 =head3 "TLS-SIGALG" Capability
 
