@@ -13,6 +13,7 @@ activate = 1
 
 [tls_provider]
 activate = 1
+tls-ciphersuite-mode = valid-both
 
 [ssl_configuration]
 system_default = system_default

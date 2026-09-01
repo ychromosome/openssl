@@ -13,7 +13,6 @@ int tls_provider_init(const OSSL_CORE_HANDLE *handle,
     const OSSL_DISPATCH *in,
     const OSSL_DISPATCH **out,
     void **provctx);
-void tls_provider_set_ciphersuite_mode(const char *mode);
 
 OSSL_provider_init_fn OSSL_provider_init;
 int OSSL_provider_init(const OSSL_CORE_HANDLE *handle,
@@ -21,6 +20,5 @@ int OSSL_provider_init(const OSSL_CORE_HANDLE *handle,
     const OSSL_DISPATCH **out,
     void **provctx)
 {
-    tls_provider_set_ciphersuite_mode("valid");
     return tls_provider_init(handle, in, out, provctx);
 }
