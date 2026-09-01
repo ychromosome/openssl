@@ -15,6 +15,8 @@ setup("test_provider_tls_ciphersuite");
 
 plan skip_all => "TLS 1.3 is not supported by this build"
     if disabled("tls1_3");
+plan skip_all => "no TLS 1.3 key exchange is available"
+    if disabled("ec") && disabled("dh");
 
 plan tests => 1;
 

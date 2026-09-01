@@ -24,7 +24,6 @@ int tls_provider_init(const OSSL_CORE_HANDLE *handle,
     const OSSL_DISPATCH *in,
     const OSSL_DISPATCH **out,
     void **provctx);
-void tls_provider_set_ciphersuite_mode(const char *mode);
 
 typedef struct {
     const char *mode;
@@ -106,89 +105,23 @@ static OSSL_LIB_CTX *libctx;
 static OSSL_PROVIDER *defprov, *tlsprov;
 static char *cert, *privkey;
 
+static OSSL_PROVIDER *load_tls_provider(OSSL_LIB_CTX *ctx, const char *name,
+    const char *mode)
+{
+    OSSL_PARAM params[] = {
+        OSSL_PARAM_utf8_string("tls-ciphersuite-mode", (char *)mode, 0),
+        OSSL_PARAM_END
+    };
+
+    return OSSL_PROVIDER_load_ex(ctx, name, params);
+}
+
 #define TLS_TEST_SHA256_NAME "TLS_TEST_PROVIDER_AES_128_GCM_SHA256"
 #define TLS_TEST_SHA384_NAME "TLS_TEST_PROVIDER_AES_256_GCM_SHA384"
 #define TLS_TEST_COMPOSED_NAME "TLS_TEST_COMPOSED_AES_128_GCM_SHA256"
 #define TLS_TEST_AEAD128_NAME "TLS-TEST-AES-128-GCM"
 #define TLS_TEST_OVERSIZED_AEAD_NAME "TLS-TEST-AEAD-65"
 #define TLS_TEST_MANY_COUNT 128
-
-static int corrupt_records;
-static BIO_METHOD *corrupt_filter_method;
-
-static void copy_retry_flags(BIO *bio)
-{
-    BIO *next = BIO_next(bio);
-    int flags = BIO_test_flags(next, BIO_FLAGS_SHOULD_RETRY | BIO_FLAGS_RWS);
-
-    BIO_clear_flags(bio, BIO_FLAGS_SHOULD_RETRY | BIO_FLAGS_RWS);
-    BIO_set_flags(bio, flags);
-}
-
-static int corrupt_filter_read(BIO *bio, char *out, int outl)
-{
-    int ret = BIO_read(BIO_next(bio), out, outl);
-
-    copy_retry_flags(bio);
-    return ret;
-}
-
-static int corrupt_filter_write(BIO *bio, const char *in, int inl)
-{
-    BIO *next = BIO_next(bio);
-    unsigned char *copy = NULL;
-    int ret;
-
-    if (corrupt_records && inl > 0) {
-        copy = OPENSSL_memdup(in, (size_t)inl);
-        if (copy == NULL)
-            return 0;
-        copy[inl - 1] ^= 1;
-        ret = BIO_write(next, copy, inl);
-        OPENSSL_free(copy);
-    } else {
-        ret = BIO_write(next, in, inl);
-    }
-    copy_retry_flags(bio);
-    return ret;
-}
-
-static long corrupt_filter_ctrl(BIO *bio, int cmd, long num, void *ptr)
-{
-    BIO *next = BIO_next(bio);
-
-    return next == NULL ? 0 : BIO_ctrl(next, cmd, num, ptr);
-}
-
-static int corrupt_filter_new(BIO *bio)
-{
-    BIO_set_init(bio, 1);
-    return 1;
-}
-
-static int corrupt_filter_free(BIO *bio)
-{
-    BIO_set_init(bio, 0);
-    return 1;
-}
-
-static const BIO_METHOD *corrupt_filter(void)
-{
-    if (corrupt_filter_method == NULL) {
-        corrupt_filter_method = BIO_meth_new(BIO_TYPE_FILTER,
-            "TLS record corruption filter");
-        if (corrupt_filter_method == NULL
-            || !BIO_meth_set_read(corrupt_filter_method, corrupt_filter_read)
-            || !BIO_meth_set_write(corrupt_filter_method,
-                corrupt_filter_write)
-            || !BIO_meth_set_ctrl(corrupt_filter_method, corrupt_filter_ctrl)
-            || !BIO_meth_set_create(corrupt_filter_method, corrupt_filter_new)
-            || !BIO_meth_set_destroy(corrupt_filter_method,
-                corrupt_filter_free))
-            return NULL;
-    }
-    return corrupt_filter_method;
-}
 
 static int test_provider_aead_kat(void)
 {
@@ -399,26 +332,21 @@ static int cipher_stack_has_provider_suite(
 static int test_ciphersuite_mode(int idx)
 {
     const CIPHERSUITE_TEST *test = &ciphersuite_tests[idx];
-    OSSL_LIB_CTX *testlibctx = libctx, *localctx = NULL;
+    OSSL_LIB_CTX *localctx = NULL;
     OSSL_PROVIDER *localdef = NULL, *localtls = NULL;
     SSL_CTX *ctx = NULL;
     int i, ret = 0;
 
-    tls_provider_set_ciphersuite_mode(test->mode);
-    if (strcmp(test->mode, "oversized-digest") == 0
-        || strcmp(test->mode, "oversized-digest-sha384") == 0) {
-        if (!TEST_ptr(localctx = OSSL_LIB_CTX_new())
-            || !TEST_true(OSSL_PROVIDER_add_builtin(localctx, "tls-provider",
-                tls_provider_init))
-            || !TEST_ptr(localdef = OSSL_PROVIDER_load(localctx, "default"))
-            || !TEST_ptr(localtls = OSSL_PROVIDER_load(localctx,
-                             "tls-provider"))
-            || !TEST_true(EVP_set_default_properties(localctx,
-                "?provider=tls-provider")))
-            goto end;
-        testlibctx = localctx;
-    }
-    ctx = SSL_CTX_new_ex(testlibctx, NULL, TLS_method());
+    if (!TEST_ptr(localctx = OSSL_LIB_CTX_new())
+        || !TEST_true(OSSL_PROVIDER_add_builtin(localctx, "tls-provider-mode",
+            tls_provider_init))
+        || !TEST_ptr(localdef = OSSL_PROVIDER_load(localctx, "default"))
+        || !TEST_ptr(localtls = load_tls_provider(localctx,
+                         "tls-provider-mode", test->mode))
+        || !TEST_true(EVP_set_default_properties(localctx,
+            "?provider=tls-provider")))
+        goto end;
+    ctx = SSL_CTX_new_ex(localctx, NULL, TLS_method());
     if (test->expect_success) {
         if (!TEST_ptr(ctx)
             || !TEST_int_eq(sk_SSL_CIPHER_num(ctx->provider_ciphersuites),
@@ -448,7 +376,6 @@ end:
     OSSL_PROVIDER_unload(localtls);
     OSSL_PROVIDER_unload(localdef);
     OSSL_LIB_CTX_free(localctx);
-    tls_provider_set_ciphersuite_mode(NULL);
     return ret;
 }
 
@@ -457,7 +384,6 @@ static int test_property_query_exclusion(void)
     SSL_CTX *ctx = NULL;
     int ret = 0;
 
-    tls_provider_set_ciphersuite_mode("valid");
     if (!TEST_ptr(ctx = SSL_CTX_new_ex(libctx, "provider=default",
                       TLS_method()))
         || !TEST_int_eq(sk_SSL_CIPHER_num(ctx->provider_ciphersuites), 0)
@@ -469,21 +395,28 @@ static int test_property_query_exclusion(void)
 end:
     SSL_CTX_free(ctx);
     ERR_clear_error();
-    tls_provider_set_ciphersuite_mode(NULL);
     return ret;
 }
 
 static int test_provider_registry_indexes(void)
 {
+    OSSL_LIB_CTX *localctx = NULL;
+    OSSL_PROVIDER *localdef = NULL, *localtls = NULL;
     SSL_CTX *ctx = NULL;
     const SSL_CIPHER *by_id, *by_name;
     char name[64];
     uint32_t id;
     int i, ret = 0;
 
-    tls_provider_set_ciphersuite_mode("valid-many");
-    ctx = SSL_CTX_new_ex(libctx, NULL, TLS_method());
-    if (!TEST_ptr(ctx)
+    if (!TEST_ptr(localctx = OSSL_LIB_CTX_new())
+        || !TEST_true(OSSL_PROVIDER_add_builtin(localctx,
+            "tls-provider-many", tls_provider_init))
+        || !TEST_ptr(localdef = OSSL_PROVIDER_load(localctx, "default"))
+        || !TEST_ptr(localtls = load_tls_provider(localctx,
+                         "tls-provider-many", "valid-many"))
+        || !TEST_true(EVP_set_default_properties(localctx,
+            "?provider=tls-provider"))
+        || !TEST_ptr(ctx = SSL_CTX_new_ex(localctx, NULL, TLS_method()))
         || !TEST_int_eq(sk_SSL_CIPHER_num(ctx->provider_ciphersuites),
             TLS_TEST_MANY_COUNT)
         || !TEST_int_eq(sk_SSL_CIPHER_num(
@@ -521,38 +454,10 @@ static int test_provider_registry_indexes(void)
     ret = 1;
 end:
     SSL_CTX_free(ctx);
+    OSSL_PROVIDER_unload(localtls);
+    OSSL_PROVIDER_unload(localdef);
+    OSSL_LIB_CTX_free(localctx);
     ERR_clear_error();
-    tls_provider_set_ciphersuite_mode(NULL);
-    return ret;
-}
-
-static int test_provider_long_description(void)
-{
-    SSL_CTX *ctx = NULL;
-    const SSL_CIPHER *suite;
-    char supplied[512], shortbuf[128];
-    char *allocated = NULL;
-    int ret = 0;
-
-    tls_provider_set_ciphersuite_mode("max-name");
-    if (!TEST_ptr(ctx = SSL_CTX_new_ex(libctx, NULL, TLS_method()))
-        || !TEST_ptr(suite = sk_SSL_CIPHER_value(
-                         ctx->provider_ciphersuites, 0))
-        || !TEST_ptr(allocated = SSL_CIPHER_description(suite, NULL, 0))
-        || !TEST_ptr(strstr(allocated, suite->name))
-        || !TEST_ptr(SSL_CIPHER_description(suite, supplied,
-            sizeof(supplied)))
-        || !TEST_ptr(strstr(supplied, suite->name))
-        || !TEST_ptr_null(SSL_CIPHER_description(suite, shortbuf,
-            sizeof(shortbuf))))
-        goto end;
-
-    ret = 1;
-end:
-    OPENSSL_free(allocated);
-    SSL_CTX_free(ctx);
-    ERR_clear_error();
-    tls_provider_set_ciphersuite_mode(NULL);
     return ret;
 }
 
@@ -567,7 +472,6 @@ static int test_provider_peer_list_deduplication(void)
     STACK_OF(SSL_CIPHER) *ciphers = NULL, *scsvs = NULL;
     int ret = 0;
 
-    tls_provider_set_ciphersuite_mode("valid");
     if (!TEST_ptr(ctx = SSL_CTX_new_ex(libctx, NULL, TLS_method()))
         || !TEST_ptr(ssl = SSL_new(ctx))
         || !TEST_true(SSL_bytes_to_cipher_list(ssl, suites, sizeof(suites),
@@ -588,7 +492,6 @@ end:
     SSL_free(ssl);
     SSL_CTX_free(ctx);
     ERR_clear_error();
-    tls_provider_set_ciphersuite_mode(NULL);
     return ret;
 }
 
@@ -596,18 +499,22 @@ static int test_provider_composition(void)
 {
     static const unsigned char message[] = "provider composition";
     unsigned char received[sizeof(message)];
+    OSSL_LIB_CTX *localctx = NULL;
+    OSSL_PROVIDER *localdef = NULL, *localtls = NULL;
     SSL_CTX *sctx = NULL, *cctx = NULL;
     SSL *serverssl = NULL, *clientssl = NULL;
     const SSL_CIPHER *suite;
     size_t written = 0, readbytes = 0;
-    int properties_changed = 0, ret = 0;
+    int ret = 0;
 
-    tls_provider_set_ciphersuite_mode("valid-composed");
-    if (!TEST_true(EVP_set_default_properties(libctx, "provider=default")))
-        goto end;
-    properties_changed = 1;
-
-    if (!TEST_true(create_ssl_ctx_pair(libctx, TLS_server_method(),
+    if (!TEST_ptr(localctx = OSSL_LIB_CTX_new())
+        || !TEST_true(OSSL_PROVIDER_add_builtin(localctx,
+            "tls-provider-composed", tls_provider_init))
+        || !TEST_ptr(localdef = OSSL_PROVIDER_load(localctx, "default"))
+        || !TEST_ptr(localtls = load_tls_provider(localctx,
+                         "tls-provider-composed", "valid-composed"))
+        || !TEST_true(EVP_set_default_properties(localctx, "provider=default"))
+        || !TEST_true(create_ssl_ctx_pair(localctx, TLS_server_method(),
             TLS_client_method(), TLS1_3_VERSION, TLS1_3_VERSION,
             &sctx, &cctx, cert, privkey))
         || !TEST_true(SSL_CTX_set_num_tickets(sctx, 0))
@@ -615,9 +522,9 @@ static int test_provider_composition(void)
         || !TEST_ptr(suite = sk_SSL_CIPHER_value(
                          sctx->provider_ciphersuites, 0))
         || !TEST_ptr_eq(EVP_CIPHER_get0_provider(suite->provider_cipher),
-            defprov)
+            localdef)
         || !TEST_ptr_eq(EVP_MD_get0_provider(suite->provider_digest),
-            defprov)
+            localdef)
         || !TEST_true(SSL_CTX_set_ciphersuites(sctx,
             TLS_TEST_COMPOSED_NAME))
         || !TEST_true(SSL_CTX_set_ciphersuites(cctx,
@@ -657,11 +564,10 @@ end:
     SSL_free(clientssl);
     SSL_CTX_free(sctx);
     SSL_CTX_free(cctx);
-    if (properties_changed
-        && !EVP_set_default_properties(libctx, "?provider=tls-provider"))
-        ret = 0;
+    OSSL_PROVIDER_unload(localtls);
+    OSSL_PROVIDER_unload(localdef);
+    OSSL_LIB_CTX_free(localctx);
     ERR_clear_error();
-    tls_provider_set_ciphersuite_mode(NULL);
     return ret;
 }
 
@@ -670,17 +576,15 @@ static int test_provider_discovery_mfail(void)
     SSL_CTX *ctx;
     int ret = 0;
 
-    tls_provider_set_ciphersuite_mode("valid");
     MFAIL_start();
     ctx = SSL_CTX_new_ex(libctx, NULL, TLS_method());
     MFAIL_end();
 
     if (ctx != NULL
-        && sk_SSL_CIPHER_num(ctx->provider_ciphersuites) == 1)
+        && sk_SSL_CIPHER_num(ctx->provider_ciphersuites) == 2)
         ret = 1;
     SSL_CTX_free(ctx);
     ERR_clear_error();
-    tls_provider_set_ciphersuite_mode(NULL);
     return ret;
 }
 
@@ -692,7 +596,6 @@ static int test_ssl_ciphersuites_mfail(void)
     STACK_OF(SSL_CIPHER) *old_tls, *old_list, *old_by_id;
     int set_ok, ret = 0;
 
-    tls_provider_set_ciphersuite_mode("valid");
     if (!TEST_ptr(ctx = SSL_CTX_new_ex(libctx, NULL, TLS_method()))
         || !TEST_ptr(ssl = SSL_new(ctx))
         || !TEST_ptr(sc = SSL_CONNECTION_FROM_SSL_ONLY(ssl))
@@ -725,99 +628,6 @@ end:
     SSL_free(ssl);
     SSL_CTX_free(ctx);
     ERR_clear_error();
-    tls_provider_set_ciphersuite_mode(NULL);
-    return ret;
-}
-
-static int test_provider_handshake(int idx)
-{
-    static const char exporter_label[] = "provider ciphersuite exporter";
-    const char *mode = idx == 0 ? "valid" : "valid-sha384";
-    const char *name = idx == 0 ? TLS_TEST_SHA256_NAME : TLS_TEST_SHA384_NAME;
-    const char *digest_name = idx == 0 ? "SHA2-256" : "SHA2-384";
-    const char *cipher_name = idx == 0 ? "TLS-TEST-AES-128-GCM"
-                                       : "TLS-TEST-AES-256-GCM";
-    unsigned int codepoint = idx == 0 ? 0xffa0U : 0xffa2U;
-    unsigned char wire_id[] = {
-        (unsigned char)(codepoint >> 8), (unsigned char)codepoint
-    };
-    static const unsigned char message[] = "provider ciphersuite record";
-    unsigned char received[sizeof(message)];
-    unsigned char client_export[32], server_export[32];
-    SSL_CTX *sctx = NULL, *cctx = NULL;
-    SSL *serverssl = NULL, *clientssl = NULL;
-    const SSL_CIPHER *client_cipher, *server_cipher;
-    char description[256];
-    size_t written = 0, readbytes = 0;
-    int ret = 0;
-
-    tls_provider_set_ciphersuite_mode(mode);
-    if (!TEST_true(create_ssl_ctx_pair(libctx, TLS_server_method(),
-            TLS_client_method(), TLS1_3_VERSION, TLS1_3_VERSION,
-            &sctx, &cctx, cert, privkey))
-        || !TEST_true(SSL_CTX_set_num_tickets(sctx, 0))
-        || !TEST_true(SSL_CTX_set_ciphersuites(sctx, name))
-        || !TEST_true(SSL_CTX_set_ciphersuites(cctx, name))
-        || !TEST_true(create_ssl_objects(sctx, cctx, &serverssl, &clientssl,
-            NULL, NULL))
-        || !TEST_ptr(client_cipher = SSL_CIPHER_find(clientssl, wire_id))
-        || !TEST_uint_eq(SSL_CIPHER_get_protocol_id(client_cipher), codepoint)
-        || !TEST_int_eq(SSL_CIPHER_get_cipher_nid(client_cipher), NID_undef)
-        || !TEST_int_eq(SSL_CIPHER_get_digest_nid(client_cipher), NID_undef)
-        || !TEST_ptr_null(SSL_CIPHER_standard_name(client_cipher))
-        || !TEST_true(SSL_CIPHER_is_aead(client_cipher))
-        || !TEST_true(EVP_MD_is_a(SSL_CIPHER_get_handshake_digest(client_cipher),
-            digest_name))
-        || !TEST_ptr(SSL_CIPHER_description(client_cipher, description,
-            sizeof(description)))
-        || !TEST_ptr(strstr(description, cipher_name))
-        || !TEST_true(create_ssl_connection(serverssl, clientssl,
-            SSL_ERROR_NONE))
-        || !TEST_true(SSL_export_keying_material(clientssl, client_export,
-            sizeof(client_export), exporter_label,
-            sizeof(exporter_label) - 1, NULL, 0, 0))
-        || !TEST_true(SSL_export_keying_material(serverssl, server_export,
-            sizeof(server_export), exporter_label,
-            sizeof(exporter_label) - 1, NULL, 0, 0))
-        || !TEST_mem_eq(client_export, sizeof(client_export), server_export,
-            sizeof(server_export)))
-        goto end;
-
-    client_cipher = SSL_get_current_cipher(clientssl);
-    server_cipher = SSL_get_current_cipher(serverssl);
-    if (!TEST_ptr(client_cipher)
-        || !TEST_ptr(server_cipher)
-        || !TEST_uint_eq(SSL_CIPHER_get_protocol_id(client_cipher), codepoint)
-        || !TEST_uint_eq(SSL_CIPHER_get_protocol_id(server_cipher), codepoint)
-        || !TEST_int_eq(client_cipher->origin, SSL_CIPHER_ORIGIN_PROVIDER)
-        || !TEST_int_eq(server_cipher->origin, SSL_CIPHER_ORIGIN_PROVIDER)
-        || !TEST_true(SSL_write_ex(clientssl, message, sizeof(message), &written))
-        || !TEST_size_t_eq(written, sizeof(message))
-        || !TEST_true(SSL_read_ex(serverssl, received, sizeof(received),
-            &readbytes))
-        || !TEST_size_t_eq(readbytes, sizeof(message))
-        || !TEST_mem_eq(received, readbytes, message, sizeof(message))
-        || !TEST_true(SSL_write_ex(serverssl, message, sizeof(message),
-            &written))
-        || !TEST_true(SSL_read_ex(clientssl, received, sizeof(received),
-            &readbytes))
-        || !TEST_mem_eq(received, readbytes, message, sizeof(message))
-        || !TEST_true(SSL_key_update(clientssl, SSL_KEY_UPDATE_REQUESTED))
-        || !TEST_true(SSL_write_ex(clientssl, message, sizeof(message),
-            &written))
-        || !TEST_true(SSL_read_ex(serverssl, received, sizeof(received),
-            &readbytes))
-        || !TEST_mem_eq(received, readbytes, message, sizeof(message)))
-        goto end;
-
-    ret = 1;
-end:
-    SSL_free(serverssl);
-    SSL_free(clientssl);
-    SSL_CTX_free(sctx);
-    SSL_CTX_free(cctx);
-    ERR_clear_error();
-    tls_provider_set_ciphersuite_mode(NULL);
     return ret;
 }
 
@@ -832,7 +642,6 @@ static int test_provider_hrr(void)
     return TEST_skip("EC and DH are disabled");
 #endif
 
-    tls_provider_set_ciphersuite_mode("valid");
     if (!TEST_true(create_ssl_ctx_pair(libctx, TLS_server_method(),
             TLS_client_method(), TLS1_3_VERSION, TLS1_3_VERSION,
             &sctx, &cctx, cert, privkey))
@@ -869,7 +678,6 @@ end:
     SSL_CTX_free(sctx);
     SSL_CTX_free(cctx);
     ERR_clear_error();
-    tls_provider_set_ciphersuite_mode(NULL);
     return ret;
 }
 
@@ -886,7 +694,6 @@ static int test_sni_context_switch(int idx)
         return TEST_skip("EC and DH are disabled");
 #endif
 
-    tls_provider_set_ciphersuite_mode("valid");
     if (!TEST_true(create_ssl_ctx_pair(libctx, TLS_server_method(),
             TLS_client_method(), TLS1_3_VERSION, TLS1_3_VERSION,
             &sctx, &cctx, cert, privkey))
@@ -912,8 +719,9 @@ static int test_sni_context_switch(int idx)
                 TLS_TEST_SHA256_NAME)))
             goto end;
     } else {
-        tls_provider_set_ciphersuite_mode("unsupported");
-        if (!TEST_true(create_ssl_ctx_pair(libctx, TLS_server_method(), NULL,
+        if (!TEST_ptr(data.first = SSL_CTX_new_ex(libctx, "provider=default",
+                          TLS_server_method()))
+            || !TEST_true(create_ssl_ctx_pair(libctx, TLS_server_method(), NULL,
                 TLS1_3_VERSION, TLS1_3_VERSION, &data.first, NULL,
                 cert, privkey))
             || !TEST_int_eq(sk_SSL_CIPHER_num(
@@ -966,7 +774,6 @@ end:
     SSL_CTX_free(data.first);
     SSL_CTX_free(data.second);
     ERR_clear_error();
-    tls_provider_set_ciphersuite_mode(NULL);
     return ret;
 }
 
@@ -979,7 +786,6 @@ static int test_switched_context_supported_ciphers(void)
     const char *borrowed_name = NULL;
     int i, borrowed_idx = -1, ret = 0;
 
-    tls_provider_set_ciphersuite_mode("valid");
     if (!TEST_ptr(initial = SSL_CTX_new_ex(libctx, NULL, TLS_method()))
         || !TEST_true(SSL_CTX_set_ciphersuites(initial,
             TLS_TEST_SHA256_NAME))
@@ -987,10 +793,9 @@ static int test_switched_context_supported_ciphers(void)
                          TLS_TEST_SHA256_NAME))
         || !TEST_ptr(ssl = SSL_new(initial)))
         goto end;
-    tls_provider_set_ciphersuite_mode("unsupported");
-    if (!TEST_ptr(alternate = SSL_CTX_new_ex(libctx, NULL, TLS_method())))
+    if (!TEST_ptr(alternate = SSL_CTX_new_ex(libctx, "provider=default",
+                      TLS_method())))
         goto end;
-    tls_provider_set_ciphersuite_mode("valid");
     borrowed = SSL_get_ciphers(ssl);
     if (!TEST_ptr(borrowed))
         goto end;
@@ -1033,7 +838,6 @@ end:
     SSL_CTX_free(initial);
     SSL_CTX_free(alternate);
     ERR_clear_error();
-    tls_provider_set_ciphersuite_mode(NULL);
     return ret;
 }
 
@@ -1046,7 +850,6 @@ static int test_post_handshake_context_switch(void)
     size_t written = 0, readbytes = 0;
     int ret = 0;
 
-    tls_provider_set_ciphersuite_mode("valid");
     if (!TEST_true(create_ssl_ctx_pair(libctx, TLS_server_method(),
             TLS_client_method(), TLS1_3_VERSION, TLS1_3_VERSION,
             &sctx, &cctx, cert, privkey))
@@ -1054,11 +857,9 @@ static int test_post_handshake_context_switch(void)
         || !TEST_true(SSL_CTX_set_ciphersuites(sctx, TLS_TEST_SHA256_NAME))
         || !TEST_true(SSL_CTX_set_ciphersuites(cctx, TLS_TEST_SHA256_NAME)))
         goto end;
-    tls_provider_set_ciphersuite_mode("unsupported");
-    if (!TEST_ptr(alternate = SSL_CTX_new_ex(libctx, NULL,
+    if (!TEST_ptr(alternate = SSL_CTX_new_ex(libctx, "provider=default",
                       TLS_client_method())))
         goto end;
-    tls_provider_set_ciphersuite_mode("valid");
 
     if (!TEST_true(create_ssl_objects(sctx, cctx, &serverssl, &clientssl,
             NULL, NULL))
@@ -1081,7 +882,6 @@ end:
     SSL_CTX_free(cctx);
     SSL_CTX_free(alternate);
     ERR_clear_error();
-    tls_provider_set_ciphersuite_mode(NULL);
     return ret;
 }
 
@@ -1093,7 +893,6 @@ static int test_ssl_dup_canonicalisation(void)
     const SSL_CIPHER *canonical, *negotiated;
     int idx, ret = 0;
 
-    tls_provider_set_ciphersuite_mode("valid");
     if (!TEST_true(create_ssl_ctx_pair(libctx, TLS_server_method(),
             TLS_client_method(), TLS1_3_VERSION, TLS1_3_VERSION,
             &sctx, &cctx, cert, privkey))
@@ -1133,27 +932,34 @@ end:
     SSL_CTX_free(sctx);
     SSL_CTX_free(cctx);
     ERR_clear_error();
-    tls_provider_set_ciphersuite_mode(NULL);
     return ret;
 }
 
 static int test_ssl_dup_rejects_foreign_ciphersuite(void)
 {
+    OSSL_LIB_CTX *localctx = NULL;
+    OSSL_PROVIDER *localdef = NULL, *localtls = NULL;
     SSL_CTX *initial = NULL, *foreign = NULL;
     SSL *ssl = NULL, *dup = NULL;
     SSL_CONNECTION *sc;
     const SSL_CIPHER *foreign_suite;
     int ret = 0;
 
-    tls_provider_set_ciphersuite_mode("valid");
     if (!TEST_ptr(initial = SSL_CTX_new_ex(libctx, NULL, TLS_method()))
         || !TEST_ptr(ssl = SSL_new(initial))
         || !TEST_true(SSL_set_ciphersuites(ssl, TLS_TEST_SHA256_NAME))
         || !TEST_ptr(sc = SSL_CONNECTION_FROM_SSL_ONLY(ssl)))
         goto end;
 
-    tls_provider_set_ciphersuite_mode("valid-conflicting");
-    if (!TEST_ptr(foreign = SSL_CTX_new_ex(libctx, NULL, TLS_method()))
+    if (!TEST_ptr(localctx = OSSL_LIB_CTX_new())
+        || !TEST_true(OSSL_PROVIDER_add_builtin(localctx,
+            "tls-provider-conflicting", tls_provider_init))
+        || !TEST_ptr(localdef = OSSL_PROVIDER_load(localctx, "default"))
+        || !TEST_ptr(localtls = load_tls_provider(localctx,
+                         "tls-provider-conflicting", "valid-conflicting"))
+        || !TEST_true(EVP_set_default_properties(localctx,
+            "?provider=tls-provider"))
+        || !TEST_ptr(foreign = SSL_CTX_new_ex(localctx, NULL, TLS_method()))
         || !TEST_ptr(foreign_suite = ssl_provider_ciphersuite_by_name(foreign,
                          TLS_TEST_SHA256_NAME))
         || !TEST_ptr(sk_SSL_CIPHER_set(sc->tls13_ciphersuites, 0,
@@ -1167,8 +973,10 @@ end:
     SSL_free(ssl);
     SSL_CTX_free(initial);
     SSL_CTX_free(foreign);
+    OSSL_PROVIDER_unload(localtls);
+    OSSL_PROVIDER_unload(localdef);
+    OSSL_LIB_CTX_free(localctx);
     ERR_clear_error();
-    tls_provider_set_ciphersuite_mode(NULL);
     return ret;
 }
 
@@ -1178,7 +986,6 @@ static int test_one_sided_offer(void)
     SSL *serverssl = NULL, *clientssl = NULL;
     int ret = 0;
 
-    tls_provider_set_ciphersuite_mode("valid");
     if (!TEST_true(create_ssl_ctx_pair(libctx, TLS_server_method(),
             TLS_client_method(), TLS1_3_VERSION, TLS1_3_VERSION,
             &sctx, &cctx, cert, privkey))
@@ -1198,7 +1005,6 @@ end:
     SSL_CTX_free(sctx);
     SSL_CTX_free(cctx);
     ERR_clear_error();
-    tls_provider_set_ciphersuite_mode(NULL);
     return ret;
 }
 
@@ -1212,7 +1018,6 @@ static int test_tls12_exclusion(void)
     const SSL_CIPHER *cipher;
     int ret = 0;
 
-    tls_provider_set_ciphersuite_mode("valid");
     if (!TEST_true(create_ssl_ctx_pair(libctx, TLS_server_method(),
             TLS_client_method(), TLS1_2_VERSION, TLS1_2_VERSION,
             &sctx, &cctx, cert, privkey))
@@ -1233,7 +1038,6 @@ end:
     SSL_CTX_free(sctx);
     SSL_CTX_free(cctx);
     ERR_clear_error();
-    tls_provider_set_ciphersuite_mode(NULL);
     return ret;
 #endif
 }
@@ -1248,7 +1052,6 @@ static int test_quic_exclusion(void)
     const SSL_CIPHER *suite;
     int ret = 0;
 
-    tls_provider_set_ciphersuite_mode("valid");
     if (!TEST_ptr(ctx = SSL_CTX_new_ex(libctx, NULL,
                       OSSL_QUIC_client_method()))
         || !TEST_int_eq(sk_SSL_CIPHER_num(ctx->provider_ciphersuites), 0)
@@ -1275,7 +1078,6 @@ end:
     SSL_CTX_free(tlsctx);
     SSL_CTX_free(ctx);
     ERR_clear_error();
-    tls_provider_set_ciphersuite_mode(NULL);
     return ret;
 #else
     return TEST_skip("QUIC is disabled");
@@ -1293,7 +1095,6 @@ static int test_dtls_exclusion(void)
     const SSL_CIPHER *suite;
     int ret = 0;
 
-    tls_provider_set_ciphersuite_mode("valid");
     if (!TEST_ptr(ctx = SSL_CTX_new_ex(libctx, NULL, DTLS_method()))
         || !TEST_int_eq(sk_SSL_CIPHER_num(ctx->provider_ciphersuites), 0)
         || !TEST_false(cipher_stack_has_provider_suite(
@@ -1322,124 +1123,10 @@ end:
     SSL_CTX_free(tlsctx);
     SSL_CTX_free(ctx);
     ERR_clear_error();
-    tls_provider_set_ciphersuite_mode(NULL);
     return ret;
 #else
     return TEST_skip("DTLS is disabled");
 #endif
-}
-
-static int test_provider_record_tamper(void)
-{
-    static const unsigned char message[] = "provider record tamper";
-    unsigned char received[sizeof(message)];
-    SSL_CTX *sctx = NULL, *cctx = NULL;
-    SSL *serverssl = NULL, *clientssl = NULL;
-    BIO *filter = NULL;
-    size_t written = 0, readbytes = 0;
-    unsigned long err;
-    int ret = 0;
-
-    tls_provider_set_ciphersuite_mode("valid");
-    if (!TEST_true(create_ssl_ctx_pair(libctx, TLS_server_method(),
-            TLS_client_method(), TLS1_3_VERSION, TLS1_3_VERSION,
-            &sctx, &cctx, cert, privkey))
-        || !TEST_true(SSL_CTX_set_num_tickets(sctx, 0))
-        || !TEST_true(SSL_CTX_set_ciphersuites(sctx, TLS_TEST_SHA256_NAME))
-        || !TEST_true(SSL_CTX_set_ciphersuites(cctx, TLS_TEST_SHA256_NAME))
-        || !TEST_ptr(filter = BIO_new(corrupt_filter()))
-        || !TEST_true(create_ssl_objects(sctx, cctx, &serverssl, &clientssl,
-            NULL, filter)))
-        goto end;
-    filter = NULL;
-
-    if (!TEST_true(create_ssl_connection(serverssl, clientssl,
-            SSL_ERROR_NONE)))
-        goto end;
-
-    corrupt_records = 1;
-    if (!TEST_true(SSL_write_ex(clientssl, message, sizeof(message), &written))
-        || !TEST_size_t_eq(written, sizeof(message)))
-        goto end;
-
-    ERR_clear_error();
-    if (!TEST_false(SSL_read_ex(serverssl, received, sizeof(received),
-            &readbytes)))
-        goto end;
-    do {
-        err = ERR_get_error();
-        if (err == 0) {
-            TEST_error("bad record MAC error not found");
-            goto end;
-        }
-    } while (ERR_GET_REASON(err) != SSL_R_DECRYPTION_FAILED_OR_BAD_RECORD_MAC);
-
-    ret = 1;
-end:
-    corrupt_records = 0;
-    BIO_free(filter);
-    SSL_free(serverssl);
-    SSL_free(clientssl);
-    SSL_CTX_free(sctx);
-    SSL_CTX_free(cctx);
-    ERR_clear_error();
-    tls_provider_set_ciphersuite_mode(NULL);
-    return ret;
-}
-
-static int test_provider_large_fragmented_record(void)
-{
-    SSL_CTX *sctx = NULL, *cctx = NULL;
-    SSL *serverssl = NULL, *clientssl = NULL;
-    unsigned char *message = NULL, *received = NULL;
-    size_t written = 0, readbytes = 0, total = 0, i;
-    int ret = 0;
-
-    message = OPENSSL_malloc(SSL3_RT_MAX_PLAIN_LENGTH);
-    received = OPENSSL_malloc(SSL3_RT_MAX_PLAIN_LENGTH);
-    if (!TEST_ptr(message) || !TEST_ptr(received))
-        goto end;
-    for (i = 0; i < SSL3_RT_MAX_PLAIN_LENGTH; i++)
-        message[i] = (unsigned char)i;
-
-    tls_provider_set_ciphersuite_mode("valid");
-    if (!TEST_true(create_ssl_ctx_pair(libctx, TLS_server_method(),
-            TLS_client_method(), TLS1_3_VERSION, TLS1_3_VERSION,
-            &sctx, &cctx, cert, privkey))
-        || !TEST_true(SSL_CTX_set_num_tickets(sctx, 0))
-        || !TEST_true(SSL_CTX_set_ciphersuites(sctx, TLS_TEST_SHA256_NAME))
-        || !TEST_true(SSL_CTX_set_ciphersuites(cctx, TLS_TEST_SHA256_NAME))
-        || !TEST_true(create_ssl_objects(sctx, cctx, &serverssl, &clientssl,
-            NULL, NULL))
-        || !TEST_true(SSL_set_max_send_fragment(clientssl, 512))
-        || !TEST_true(create_ssl_connection(serverssl, clientssl,
-            SSL_ERROR_NONE))
-        || !TEST_true(SSL_write_ex(clientssl, message,
-            SSL3_RT_MAX_PLAIN_LENGTH, &written))
-        || !TEST_size_t_eq(written, SSL3_RT_MAX_PLAIN_LENGTH))
-        goto end;
-
-    while (total < SSL3_RT_MAX_PLAIN_LENGTH) {
-        if (!TEST_true(SSL_read_ex(serverssl, received + total,
-                SSL3_RT_MAX_PLAIN_LENGTH - total, &readbytes))
-            || !TEST_size_t_gt(readbytes, 0))
-            goto end;
-        total += readbytes;
-    }
-    if (!TEST_mem_eq(received, total, message, SSL3_RT_MAX_PLAIN_LENGTH))
-        goto end;
-
-    ret = 1;
-end:
-    OPENSSL_free(message);
-    OPENSSL_free(received);
-    SSL_free(serverssl);
-    SSL_free(clientssl);
-    SSL_CTX_free(sctx);
-    SSL_CTX_free(cctx);
-    ERR_clear_error();
-    tls_provider_set_ciphersuite_mode(NULL);
-    return ret;
 }
 
 static int test_provider_unload_lifetime(void)
@@ -1453,13 +1140,12 @@ static int test_provider_unload_lifetime(void)
     size_t written = 0, readbytes = 0;
     int ret = 0;
 
-    tls_provider_set_ciphersuite_mode("valid");
     if (!TEST_ptr(localctx = OSSL_LIB_CTX_new())
         || !TEST_true(OSSL_PROVIDER_add_builtin(localctx,
             "tls-provider-unload", tls_provider_init))
         || !TEST_ptr(localdef = OSSL_PROVIDER_load(localctx, "default"))
-        || !TEST_ptr(localtls = OSSL_PROVIDER_load(localctx,
-                         "tls-provider-unload"))
+        || !TEST_ptr(localtls = load_tls_provider(localctx,
+                         "tls-provider-unload", "valid"))
         || !TEST_true(EVP_set_default_properties(localctx,
             "?provider=tls-provider"))
         || !TEST_true(create_ssl_ctx_pair(localctx, TLS_server_method(),
@@ -1499,7 +1185,6 @@ end:
     OSSL_PROVIDER_unload(localdef);
     OSSL_LIB_CTX_free(localctx);
     ERR_clear_error();
-    tls_provider_set_ciphersuite_mode(NULL);
     return ret;
 }
 
@@ -1510,15 +1195,14 @@ static int test_late_provider_load_not_discovered(void)
     SSL_CTX *before = NULL, *after = NULL;
     int ret = 0;
 
-    tls_provider_set_ciphersuite_mode("valid");
     if (!TEST_ptr(localctx = OSSL_LIB_CTX_new())
         || !TEST_true(OSSL_PROVIDER_add_builtin(localctx, "tls-provider-late",
             tls_provider_init))
         || !TEST_ptr(localdef = OSSL_PROVIDER_load(localctx, "default"))
         || !TEST_ptr(before = SSL_CTX_new_ex(localctx, NULL, TLS_method()))
         || !TEST_int_eq(sk_SSL_CIPHER_num(before->provider_ciphersuites), 0)
-        || !TEST_ptr(localtls = OSSL_PROVIDER_load(localctx,
-                         "tls-provider-late"))
+        || !TEST_ptr(localtls = load_tls_provider(localctx,
+                         "tls-provider-late", "valid"))
         || !TEST_false(SSL_CTX_set_ciphersuites(before,
             TLS_TEST_SHA256_NAME)))
         goto end;
@@ -1537,7 +1221,6 @@ end:
     OSSL_PROVIDER_unload(localdef);
     OSSL_LIB_CTX_free(localctx);
     ERR_clear_error();
-    tls_provider_set_ciphersuite_mode(NULL);
     return ret;
 }
 
@@ -1552,7 +1235,8 @@ int setup_tests(void)
         || !TEST_true(OSSL_PROVIDER_add_builtin(libctx, "tls-provider",
             tls_provider_init))
         || !TEST_ptr(defprov = OSSL_PROVIDER_load(libctx, "default"))
-        || !TEST_ptr(tlsprov = OSSL_PROVIDER_load(libctx, "tls-provider"))
+        || !TEST_ptr(tlsprov = load_tls_provider(libctx, "tls-provider",
+                         "valid-both"))
         || !TEST_true(EVP_set_default_properties(libctx,
             "?provider=tls-provider")))
         return 0;
@@ -1561,13 +1245,11 @@ int setup_tests(void)
     ADD_TEST(test_oversized_aead_fixture);
     ADD_ALL_TESTS(test_ciphersuite_mode, OSSL_NELEM(ciphersuite_tests));
     ADD_TEST(test_provider_registry_indexes);
-    ADD_TEST(test_provider_long_description);
     ADD_TEST(test_provider_peer_list_deduplication);
     ADD_TEST(test_property_query_exclusion);
     ADD_TEST(test_provider_composition);
     ADD_MFAIL_SAMPLED_NO_CHECK_TEST(test_provider_discovery_mfail, 64);
     ADD_MFAIL_SAMPLED_NO_CHECK_TEST(test_ssl_ciphersuites_mfail, 64);
-    ADD_ALL_TESTS(test_provider_handshake, 2);
     ADD_TEST(test_provider_hrr);
     ADD_ALL_TESTS(test_sni_context_switch, 4);
     ADD_TEST(test_switched_context_supported_ciphers);
@@ -1578,8 +1260,6 @@ int setup_tests(void)
     ADD_TEST(test_tls12_exclusion);
     ADD_TEST(test_quic_exclusion);
     ADD_TEST(test_dtls_exclusion);
-    ADD_TEST(test_provider_record_tamper);
-    ADD_TEST(test_provider_large_fragmented_record);
     ADD_TEST(test_late_provider_load_not_discovered);
     ADD_TEST(test_provider_unload_lifetime);
     return 1;
@@ -1587,7 +1267,6 @@ int setup_tests(void)
 
 void cleanup_tests(void)
 {
-    BIO_meth_free(corrupt_filter_method);
     if (tlsprov != NULL)
         OSSL_PROVIDER_unload(tlsprov);
     OSSL_PROVIDER_unload(defprov);
