@@ -103,8 +103,9 @@ valid across `SSL_set_SSL_CTX()`.
 
 Once a session has held a provider suite, it cannot be resumed, cached,
 serialised or ticketed. This state survives session duplication and later
-cipher assignment. A received ticket is parsed and ignored. `SSL_clear()`
-drops the marked session. A successful `d2i_SSL_SESSION()` clears the
+cipher assignment. A received ticket passes the common TLS 1.3 extension
+parser and is then ignored. `SSL_clear()` drops the marked session. A
+successful `d2i_SSL_SESSION()` clears the
 provider-cipher and external-PSK markers but preserves any existing
 `not_resumable` state. A failed in-place decode leaves the prior cipher
 descriptor valid.

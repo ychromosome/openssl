@@ -3261,6 +3261,7 @@ MSG_PROCESS_RETURN tls_process_new_session_ticket(SSL_CONNECTION *s,
 
     if (s->session->provider_cipher_seen) {
         PACKET extpkt;
+        uint32_t max_early_data = s->session->ext.max_early_data;
 
         if (!PACKET_forward(pkt, ticklen)
             || (SSL_CONNECTION_IS_VERSION13(s)
@@ -3269,6 +3270,17 @@ MSG_PROCESS_RETURN tls_process_new_session_ticket(SSL_CONNECTION *s,
             SSLfatal(s, SSL_AD_DECODE_ERROR, SSL_R_LENGTH_MISMATCH);
             goto err;
         }
+        if (SSL_CONNECTION_IS_VERSION13(s)
+            && (!tls_collect_extensions(s, &extpkt,
+                    SSL_EXT_TLS1_3_NEW_SESSION_TICKET, &exts, NULL, 1)
+                || !tls_parse_all_extensions(s,
+                    SSL_EXT_TLS1_3_NEW_SESSION_TICKET,
+                    exts, NULL, 0, 1))) {
+            s->session->ext.max_early_data = max_early_data;
+            goto err;
+        }
+        s->session->ext.max_early_data = max_early_data;
+        OPENSSL_free(exts);
         return MSG_PROCESS_FINISHED_READING;
     }
 
