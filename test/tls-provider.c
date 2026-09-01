@@ -870,7 +870,6 @@ static const OSSL_DISPATCH tls_proxy_oversized_digest384_functions[] = {
 
 /* Test-only AEAD with a key one byte larger than EVP_MAX_KEY_LENGTH. */
 #define TLS_TEST_OVERSIZED_AEAD_NAME "TLS-TEST-AEAD-65"
-#define TLS_TEST_WIDE_AES128_NAME "TLS-TEST-WIDE-AES-128-GCM"
 
 static void *tls_oversized_aead_newctx(ossl_unused void *provctx)
 {
@@ -937,29 +936,6 @@ static int tls_oversized_aead_get_params(OSSL_PARAM params[])
     return 1;
 }
 
-static int tls_wide_aes128_get_params(OSSL_PARAM params[])
-{
-    OSSL_PARAM *p;
-    size_t keylen = EVP_MAX_KEY_LENGTH;
-
-    p = OSSL_PARAM_locate(params, OSSL_CIPHER_PARAM_KEYLEN);
-    if (p != NULL && !OSSL_PARAM_set_size_t(p, keylen))
-        return 0;
-    p = OSSL_PARAM_locate(params, OSSL_CIPHER_PARAM_BLOCK_SIZE);
-    if (p != NULL && !OSSL_PARAM_set_size_t(p, 1))
-        return 0;
-    p = OSSL_PARAM_locate(params, OSSL_CIPHER_PARAM_IVLEN);
-    if (p != NULL && !OSSL_PARAM_set_size_t(p, 12))
-        return 0;
-    p = OSSL_PARAM_locate(params, OSSL_CIPHER_PARAM_MODE);
-    if (p != NULL && !OSSL_PARAM_set_uint(p, EVP_CIPH_GCM_MODE))
-        return 0;
-    p = OSSL_PARAM_locate(params, OSSL_CIPHER_PARAM_AEAD);
-    if (p != NULL && !OSSL_PARAM_set_int(p, 1))
-        return 0;
-    return 1;
-}
-
 static int tls_oversized_aead_get_ctx_params(ossl_unused void *vctx,
     OSSL_PARAM params[])
 {
@@ -996,22 +972,6 @@ static const OSSL_DISPATCH tls_oversized_aead_functions[] = {
     OSSL_DISPATCH_END
 };
 
-static const OSSL_DISPATCH tls_wide_aes128_functions[] = {
-    { OSSL_FUNC_CIPHER_NEWCTX, (void (*)(void))tls_oversized_aead_newctx },
-    { OSSL_FUNC_CIPHER_FREECTX, (void (*)(void))tls_oversized_aead_freectx },
-    { OSSL_FUNC_CIPHER_ENCRYPT_INIT, (void (*)(void))tls_oversized_aead_init },
-    { OSSL_FUNC_CIPHER_DECRYPT_INIT, (void (*)(void))tls_oversized_aead_init },
-    { OSSL_FUNC_CIPHER_UPDATE, (void (*)(void))tls_oversized_aead_update },
-    { OSSL_FUNC_CIPHER_FINAL, (void (*)(void))tls_oversized_aead_final },
-    { OSSL_FUNC_CIPHER_GET_PARAMS,
-        (void (*)(void))tls_wide_aes128_get_params },
-    { OSSL_FUNC_CIPHER_GET_CTX_PARAMS,
-        (void (*)(void))tls_oversized_aead_get_ctx_params },
-    { OSSL_FUNC_CIPHER_GETTABLE_CTX_PARAMS,
-        (void (*)(void))tls_oversized_aead_gettable_ctx },
-    OSSL_DISPATCH_END
-};
-
 static const OSSL_ALGORITHM tls_prov_ciphers[] = {
     { TLS_TEST_AEAD128_NAME, "provider=tls-provider",
         tls_proxy_aes128_functions },
@@ -1021,18 +981,6 @@ static const OSSL_ALGORITHM tls_prov_ciphers[] = {
         tls_proxy_limited_aes128_functions },
     { TLS_TEST_OVERSIZED_AEAD_NAME, "provider=tls-provider",
         tls_oversized_aead_functions },
-    { NULL, NULL, NULL }
-};
-
-static const OSSL_ALGORITHM tls_prov_ciphers_with_wide_aes128[] = {
-    { TLS_TEST_AEAD128_NAME, "provider=tls-provider",
-        tls_proxy_aes128_functions },
-    { TLS_TEST_AEAD256_NAME, "provider=tls-provider",
-        tls_proxy_aes256_functions },
-    { TLS_TEST_OVERSIZED_AEAD_NAME, "provider=tls-provider",
-        tls_oversized_aead_functions },
-    { TLS_TEST_WIDE_AES128_NAME ":AES-128-GCM", "provider=tls-provider",
-        tls_wide_aes128_functions },
     { NULL, NULL, NULL }
 };
 
@@ -1176,7 +1124,6 @@ static int tls_prov_get_ciphersuites(OSSL_CALLBACK *cb, void *arg)
     char unavailable_digest[] = "TLS-TEST-NO-SUCH-DIGEST";
     char oversized[] = TLS_TEST_OVERSIZED_AEAD_NAME;
     char limited_aes128[] = TLS_TEST_LIMITED_AEAD128_NAME;
-    char wide_aes128[] = TLS_TEST_WIDE_AES128_NAME;
     char bad_digest[] = "SHA2-512";
     char oversized_digest[] = TLS_TEST_OVERSIZED_DIGEST_NAME;
     char sha384_name[] = "TLS_TEST_PROVIDER_AES_256_GCM_SHA384";
@@ -1231,9 +1178,12 @@ static int tls_prov_get_ciphersuites(OSSL_CALLBACK *cb, void *arg)
         return cb(params, arg);
     }
 
-    if (strcmp(tls_ciphersuite_mode, "valid") == 0
-        || strcmp(tls_ciphersuite_mode, "suite-only") == 0)
+    if (strcmp(tls_ciphersuite_mode, "valid") == 0)
         return cb(params, arg);
+    if (strcmp(tls_ciphersuite_mode, "capability-error") == 0) {
+        ERR_raise(ERR_LIB_USER, ERR_R_INTERNAL_ERROR);
+        return 0;
+    }
     if (strcmp(tls_ciphersuite_mode, "valid-limit") == 0) {
         params[TLS_CIPHERSUITE_AEAD_PARAM].data = limited_aes128;
         params[TLS_CIPHERSUITE_AEAD_PARAM].data_size
@@ -1422,9 +1372,6 @@ static int tls_prov_get_ciphersuites(OSSL_CALLBACK *cb, void *arg)
     } else if (strcmp(tls_ciphersuite_mode, "oversized-key") == 0) {
         params[TLS_CIPHERSUITE_AEAD_PARAM].data = oversized;
         params[TLS_CIPHERSUITE_AEAD_PARAM].data_size = sizeof(oversized);
-    } else if (strcmp(tls_ciphersuite_mode, "inconsistent-aes128-key") == 0) {
-        params[TLS_CIPHERSUITE_AEAD_PARAM].data = wide_aes128;
-        params[TLS_CIPHERSUITE_AEAD_PARAM].data_size = sizeof(wide_aes128);
     } else if (strcmp(tls_ciphersuite_mode, "bad-digest") == 0) {
         params[TLS_CIPHERSUITE_DIGEST_PARAM].data = bad_digest;
         params[TLS_CIPHERSUITE_DIGEST_PARAM].data_size = sizeof(bad_digest);
@@ -1496,29 +1443,12 @@ static int tls_prov_get_capabilities(void *provctx, const char *capability,
     int ret = 0;
     int i;
 
-    if (tls_ciphersuite_mode != NULL
-        && strcmp(tls_ciphersuite_mode, "suite-only") == 0
-        && strcmp(capability, "TLS-CIPHERSUITE") != 0)
-        return 0;
-
     if (strcmp(capability, "TLS-GROUP") == 0) {
         memcpy(group_params, xor_group_params, sizeof(group_params));
         memcpy(kemgroup_params, xor_kemgroup_params,
             sizeof(kemgroup_params));
         group_params[3].data = &pctx->tls_alg_ids[0];
         kemgroup_params[3].data = &pctx->tls_alg_ids[1];
-
-        if (tls_ciphersuite_mode != NULL
-            && strcmp(tls_ciphersuite_mode, "invalid-group") == 0) {
-            group_params[0].data = NULL;
-            return cb(group_params, arg);
-        }
-
-        if (tls_ciphersuite_mode != NULL
-            && strcmp(tls_ciphersuite_mode, "group-then-abort") == 0) {
-            (void)cb(group_params, arg);
-            return 0;
-        }
 
         /* Register our 2 groups */
         if (pctx->tls_alg_ids[0] < 65024
@@ -4266,9 +4196,6 @@ static const OSSL_ALGORITHM *tls_prov_query(void *provctx, int operation_id,
     case OSSL_OP_SIGNATURE:
         return tls_prov_signature;
     case OSSL_OP_CIPHER:
-        if (tls_ciphersuite_mode != NULL
-            && strcmp(tls_ciphersuite_mode, "inconsistent-aes128-key") == 0)
-            return tls_prov_ciphers_with_wide_aes128;
         return tls_prov_ciphers;
     case OSSL_OP_DIGEST:
         if (tls_ciphersuite_mode != NULL) {
