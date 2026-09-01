@@ -21,7 +21,6 @@ int tls_provider_init(const OSSL_CORE_HANDLE *handle,
     const OSSL_DISPATCH *in,
     const OSSL_DISPATCH **out,
     void **provctx);
-void tls_provider_set_ciphersuite_mode(const char *mode);
 
 #define TLS_TEST_CIPHERSUITE "TLS_TEST_PROVIDER_AES_128_GCM_SHA256"
 
@@ -104,10 +103,20 @@ static int check_provider_session_error(int result)
     return ret;
 }
 
-static int make_ctx_pair(const char *mode, const char *ciphersuite,
-    int tickets, SSL_CTX **sctx, SSL_CTX **cctx)
+static OSSL_PROVIDER *load_tls_provider(OSSL_LIB_CTX *ctx)
 {
-    tls_provider_set_ciphersuite_mode(mode);
+    char mode[] = "valid";
+    OSSL_PARAM params[] = {
+        OSSL_PARAM_utf8_string("tls-ciphersuite-mode", mode, 0),
+        OSSL_PARAM_END
+    };
+
+    return OSSL_PROVIDER_load_ex(ctx, "tls-provider", params);
+}
+
+static int make_ctx_pair(const char *ciphersuite, int tickets,
+    SSL_CTX **sctx, SSL_CTX **cctx)
+{
     return create_ssl_ctx_pair(libctx, TLS_server_method(), TLS_client_method(),
                TLS1_3_VERSION, TLS1_3_VERSION, sctx, cctx, cert, privkey)
         && SSL_CTX_set_num_tickets(*sctx, tickets)
@@ -166,7 +175,6 @@ static int test_provider_nst_extension_parser(void)
     size_t i;
     int ret = 0;
 
-    tls_provider_set_ciphersuite_mode("valid");
     if (!TEST_ptr(ctx = SSL_CTX_new_ex(libctx, NULL,
                       tlsv1_3_client_method()))
         || !TEST_true(SSL_CTX_set_ciphersuites(ctx, TLS_TEST_CIPHERSUITE))
@@ -202,7 +210,6 @@ end:
     SSL_free(probe);
     SSL_CTX_free(ctx);
     ERR_clear_error();
-    tls_provider_set_ciphersuite_mode(NULL);
     return ret;
 }
 
@@ -214,7 +221,7 @@ static int test_builtin_nonresumable_serialises(void)
     int ret = 0;
 
     nst_written = nst_read = 0;
-    if (!TEST_true(make_ctx_pair("unsupported", "TLS_AES_128_GCM_SHA256", 1,
+    if (!TEST_true(make_ctx_pair("TLS_AES_128_GCM_SHA256", 1,
             &sctx, &cctx))
         || !TEST_true(create_ssl_objects(sctx, cctx, &serverssl, &clientssl,
             NULL, NULL)))
@@ -240,7 +247,6 @@ end:
     SSL_CTX_free(sctx);
     SSL_CTX_free(cctx);
     ERR_clear_error();
-    tls_provider_set_ciphersuite_mode(NULL);
     return ret;
 }
 
@@ -254,7 +260,7 @@ static int test_provider_nonresumption_gates(void)
     int ret = 0;
 
     nst_written = nst_read = new_session_calls = 0;
-    if (!TEST_true(make_ctx_pair("valid", TLS_TEST_CIPHERSUITE, 2,
+    if (!TEST_true(make_ctx_pair(TLS_TEST_CIPHERSUITE, 2,
             &sctx, &cctx)))
         goto end;
     SSL_CTX_set_session_cache_mode(sctx, SSL_SESS_CACHE_SERVER);
@@ -325,7 +331,6 @@ end:
     SSL_CTX_free(sctx);
     SSL_CTX_free(cctx);
     ERR_clear_error();
-    tls_provider_set_ciphersuite_mode(NULL);
     return ret;
 }
 
@@ -342,7 +347,7 @@ static int test_injected_ticket_preserves_marker(void)
     int ret = 0;
 
     nst_written = nst_read = new_session_calls = 0;
-    if (!TEST_true(make_ctx_pair("valid", TLS_TEST_CIPHERSUITE, 0,
+    if (!TEST_true(make_ctx_pair(TLS_TEST_CIPHERSUITE, 0,
             &sctx, &cctx)))
         goto end;
     SSL_CTX_set_session_cache_mode(cctx, SSL_SESS_CACHE_CLIENT);
@@ -408,7 +413,6 @@ end:
     SSL_CTX_free(sctx);
     SSL_CTX_free(cctx);
     ERR_clear_error();
-    tls_provider_set_ciphersuite_mode(NULL);
     return ret;
 }
 
@@ -423,7 +427,7 @@ int setup_tests(void)
         || !TEST_true(OSSL_PROVIDER_add_builtin(libctx, "tls-provider",
             tls_provider_init))
         || !TEST_ptr(defprov = OSSL_PROVIDER_load(libctx, "default"))
-        || !TEST_ptr(tlsprov = OSSL_PROVIDER_load(libctx, "tls-provider"))
+        || !TEST_ptr(tlsprov = load_tls_provider(libctx))
         || !TEST_true(EVP_set_default_properties(libctx,
             "?provider=tls-provider")))
         return 0;

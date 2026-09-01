@@ -63,7 +63,6 @@ int tls_provider_init(const OSSL_CORE_HANDLE *handle,
     const OSSL_DISPATCH *in,
     const OSSL_DISPATCH **out,
     void **provctx);
-void tls_provider_set_ciphersuite_mode(const char *mode);
 
 #define XOR_KEY_SIZE 32
 
@@ -404,6 +403,7 @@ static const OSSL_PARAM xor_sig_12_params[] = {
 
 typedef struct {
     OSSL_LIB_CTX *libctx;
+    char *tls_ciphersuite_mode;
     unsigned int tls_alg_ids[4];
     size_t tls_alg_id_count;
     char dummy_group_names[NUM_DUMMY_GROUPS][DUMMY_GROUP_NAME_SIZE];
@@ -1084,15 +1084,10 @@ static const struct {
         MALFORMED_UINT_WRONG_TYPE }
 };
 
-static const char *tls_ciphersuite_mode;
-
-void tls_provider_set_ciphersuite_mode(const char *mode)
+static int tls_prov_get_ciphersuites(PROV_XOR_CTX *pctx,
+    OSSL_CALLBACK *cb, void *arg)
 {
-    tls_ciphersuite_mode = mode;
-}
-
-static int tls_prov_get_ciphersuites(OSSL_CALLBACK *cb, void *arg)
-{
+    const char *tls_ciphersuite_mode = pctx->tls_ciphersuite_mode;
     OSSL_PARAM params[OSSL_NELEM(tls_ciphersuite_params) + 1];
     char second_name[] = "TLS_TEST_PROVIDER_AES_128_GCM_SHA256_B";
     char duplicate_name[] = "tls_test_provider_aes_128_gcm_sha256";
@@ -1199,7 +1194,10 @@ static int tls_prov_get_ciphersuites(OSSL_CALLBACK *cb, void *arg)
         params[TLS_CIPHERSUITE_DIGEST_PARAM].data_size = sizeof(composed_digest);
         return cb(params, arg);
     }
-    if (strcmp(tls_ciphersuite_mode, "valid-sha384") == 0) {
+    if (strcmp(tls_ciphersuite_mode, "valid-both") == 0 && cb(params, arg) == 0)
+        return 0;
+    if (strcmp(tls_ciphersuite_mode, "valid-sha384") == 0
+        || strcmp(tls_ciphersuite_mode, "valid-both") == 0) {
         params[TLS_CIPHERSUITE_NAME_PARAM].data = sha384_name;
         params[TLS_CIPHERSUITE_NAME_PARAM].data_size = sizeof(sha384_name);
         params[TLS_CIPHERSUITE_CODEPOINT_PARAM].data = &sha384_codepoint;
@@ -1491,7 +1489,7 @@ static int tls_prov_get_capabilities(void *provctx, const char *capability,
         ret &= cb(xor_sig_12_params, arg);
     }
     if (strcmp(capability, "TLS-CIPHERSUITE") == 0)
-        ret = tls_prov_get_ciphersuites(cb, arg);
+        ret = tls_prov_get_ciphersuites(pctx, cb, arg);
     return ret;
 }
 
@@ -4181,6 +4179,8 @@ static const OSSL_ALGORITHM tls_prov_signature[] = {
 static const OSSL_ALGORITHM *tls_prov_query(void *provctx, int operation_id,
     int *no_cache)
 {
+    PROV_XOR_CTX *pctx = provctx;
+
     *no_cache = 0;
     switch (operation_id) {
     case OSSL_OP_KEYMGMT:
@@ -4198,10 +4198,10 @@ static const OSSL_ALGORITHM *tls_prov_query(void *provctx, int operation_id,
     case OSSL_OP_CIPHER:
         return tls_prov_ciphers;
     case OSSL_OP_DIGEST:
-        if (tls_ciphersuite_mode != NULL) {
-            if (strcmp(tls_ciphersuite_mode, "oversized-digest") == 0)
+        if (pctx->tls_ciphersuite_mode != NULL) {
+            if (strcmp(pctx->tls_ciphersuite_mode, "oversized-digest") == 0)
                 return tls_prov_digests_with_oversized_sha256;
-            if (strcmp(tls_ciphersuite_mode,
+            if (strcmp(pctx->tls_ciphersuite_mode,
                     "oversized-digest-sha384")
                 == 0)
                 return tls_prov_digests_with_oversized_sha384;
@@ -4217,6 +4217,7 @@ static void tls_prov_teardown(void *provctx)
 
     release_tls_alg_ids(pctx);
     OSSL_LIB_CTX_free(pctx->libctx);
+    OPENSSL_free(pctx->tls_ciphersuite_mode);
     OPENSSL_free(pctx);
 }
 
@@ -4323,9 +4324,15 @@ int tls_provider_init(const OSSL_CORE_HANDLE *handle,
     void **provctx)
 {
     OSSL_LIB_CTX *libctx = OSSL_LIB_CTX_new_from_dispatch(handle, in);
+    OSSL_FUNC_core_get_params_fn *c_get_params = NULL;
     OSSL_FUNC_core_obj_create_fn *c_obj_create = NULL;
     OSSL_FUNC_core_obj_add_sigid_fn *c_obj_add_sigid = NULL;
     PROV_XOR_CTX *xor_prov_ctx = xor_newprovctx(libctx);
+    char *mode = NULL;
+    OSSL_PARAM mode_params[] = {
+        OSSL_PARAM_utf8_ptr("tls-ciphersuite-mode", &mode, 0),
+        OSSL_PARAM_END
+    };
 
     if (libctx == NULL || xor_prov_ctx == NULL)
         goto err;
@@ -4345,6 +4352,9 @@ int tls_provider_init(const OSSL_CORE_HANDLE *handle,
     /* Retrieve registration functions */
     for (; in->function_id != 0; in++) {
         switch (in->function_id) {
+        case OSSL_FUNC_CORE_GET_PARAMS:
+            c_get_params = OSSL_FUNC_core_get_params(in);
+            break;
         case OSSL_FUNC_CORE_OBJ_CREATE:
             c_obj_create = OSSL_FUNC_core_obj_create(in);
             break;
@@ -4356,6 +4366,11 @@ int tls_provider_init(const OSSL_CORE_HANDLE *handle,
             break;
         }
     }
+
+    if (c_get_params != NULL && c_get_params(handle, mode_params)
+        && mode != NULL
+        && (xor_prov_ctx->tls_ciphersuite_mode = OPENSSL_strdup(mode)) == NULL)
+        goto err;
 
     if (c_obj_create == NULL || c_obj_add_sigid == NULL) {
         ERR_raise(ERR_LIB_USER, XORPROV_R_OBJ_CREATE_ERR);
@@ -4391,6 +4406,8 @@ int tls_provider_init(const OSSL_CORE_HANDLE *handle,
 
 err:
     release_tls_alg_ids(xor_prov_ctx);
+    if (xor_prov_ctx != NULL)
+        OPENSSL_free(xor_prov_ctx->tls_ciphersuite_mode);
     OPENSSL_free(xor_prov_ctx);
     *provctx = NULL;
     OSSL_LIB_CTX_free(libctx);

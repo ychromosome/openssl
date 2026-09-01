@@ -15,14 +15,11 @@ setup("test_provider_tls_ciphersuite_ext");
 
 plan skip_all => "TLS 1.3 is not supported by this build"
     if disabled("tls1_3");
-plan skip_all => "EC is not supported by this build"
-    if disabled("ec");
-
+plan skip_all => "no TLS 1.3 key exchange is available"
+    if disabled("ec") && disabled("dh");
 plan tests => 1;
 
 ok(run(test(["provider_tls_ciphersuite_ext_test",
              srctop_file("apps", "server.pem"),
-             srctop_file("apps", "server.pem"),
-             srctop_file("test", "certs", "server-ecdsa-cert.pem"),
-             srctop_file("test", "certs", "server-ecdsa-key.pem")])),
+             srctop_file("apps", "server.pem")])),
    "provider TLS ciphersuite extended coverage");
