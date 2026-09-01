@@ -10,8 +10,10 @@
 #include <openssl/err.h>
 #include <openssl/provider.h>
 #include <openssl/ssl.h>
+#include "internal/packet.h"
 #include "internal/ssl_unwrap.h"
 #include "../ssl/ssl_local.h"
+#include "../ssl/statem/statem_local.h"
 #include "helpers/ssltestlib.h"
 #include "testutil.h"
 
@@ -30,6 +32,45 @@ static int nst_written, nst_read, new_session_calls;
 
 static const unsigned char builtin_ciphersuite_id[] = { 0x13, 0x01 };
 static const unsigned char test_session_id[] = { 0x01 };
+
+struct nst_extension_case {
+    const char *name;
+    const unsigned char *extensions;
+    size_t extensions_len;
+    MSG_PROCESS_RETURN expected;
+};
+
+static const unsigned char truncated_header[] = { 0xff };
+static const unsigned char truncated_payload[] = { 0xff, 0xfe, 0x00, 0x01 };
+static const unsigned char duplicate_early_data[] = {
+    0x00, 0x2a, 0x00, 0x04, 0x00, 0x00, 0x00, 0x01,
+    0x00, 0x2a, 0x00, 0x04, 0x00, 0x00, 0x00, 0x01
+};
+static const unsigned char malformed_early_data[] = {
+    0x00, 0x2a, 0x00, 0x03, 0x00, 0x00, 0x01
+};
+static const unsigned char valid_early_data[] = {
+    0x00, 0x2a, 0x00, 0x04, 0x00, 0x00, 0x00, 0x2a
+};
+static const unsigned char unknown_extension[] = {
+    0xff, 0xfe, 0x00, 0x00
+};
+
+static const struct nst_extension_case nst_extension_cases[] = {
+    { "truncated header", truncated_header, sizeof(truncated_header),
+        MSG_PROCESS_ERROR },
+    { "truncated payload", truncated_payload, sizeof(truncated_payload),
+        MSG_PROCESS_ERROR },
+    { "duplicate early data", duplicate_early_data,
+        sizeof(duplicate_early_data), MSG_PROCESS_ERROR },
+    { "malformed early data", malformed_early_data,
+        sizeof(malformed_early_data), MSG_PROCESS_ERROR },
+    { "valid early data", valid_early_data, sizeof(valid_early_data),
+        MSG_PROCESS_FINISHED_READING },
+    { "unknown extension", unknown_extension, sizeof(unknown_extension),
+        MSG_PROCESS_FINISHED_READING },
+    { "empty extension list", NULL, 0, MSG_PROCESS_FINISHED_READING }
+};
 
 static void ticket_msg_cb(int write_p, int version, int content_type,
     const void *buf, size_t len, SSL *ssl, void *arg)
@@ -72,6 +113,97 @@ static int make_ctx_pair(const char *mode, const char *ciphersuite,
         && SSL_CTX_set_num_tickets(*sctx, tickets)
         && SSL_CTX_set_ciphersuites(*sctx, ciphersuite)
         && SSL_CTX_set_ciphersuites(*cctx, ciphersuite);
+}
+
+static MSG_PROCESS_RETURN process_nst_extensions(SSL_CTX *ctx,
+    const SSL_CIPHER *cipher, const unsigned char *extensions,
+    size_t extensions_len, uint32_t *max_early_data)
+{
+    unsigned char nst[64] = { 0 };
+    SSL *ssl = NULL;
+    SSL_CONNECTION *sc = NULL;
+    SSL_SESSION *session = NULL;
+    PACKET packet;
+    MSG_PROCESS_RETURN result = MSG_PROCESS_ERROR;
+
+    if (extensions_len > sizeof(nst) - 14)
+        return MSG_PROCESS_ERROR;
+    nst[3] = 1;
+    nst[10] = 1;
+    nst[11] = 0x42;
+    nst[12] = (unsigned char)(extensions_len >> 8);
+    nst[13] = (unsigned char)extensions_len;
+    if (extensions_len > 0)
+        memcpy(nst + 14, extensions, extensions_len);
+
+    ssl = SSL_new(ctx);
+    session = SSL_SESSION_new();
+    if (ssl == NULL || session == NULL
+        || !ssl_session_set_cipher(session, cipher)
+        || !SSL_SESSION_set_protocol_version(session, TLS1_3_VERSION)
+        || !PACKET_buf_init(&packet, nst, 14 + extensions_len))
+        goto end;
+
+    sc = SSL_CONNECTION_FROM_SSL(ssl);
+    SSL_SESSION_free(sc->session);
+    sc->session = session;
+    session = NULL;
+    result = tls_process_new_session_ticket(sc, &packet);
+
+end:
+    if (max_early_data != NULL && sc != NULL && sc->session != NULL)
+        *max_early_data = sc->session->ext.max_early_data;
+    SSL_SESSION_free(session);
+    SSL_free(ssl);
+    return result;
+}
+
+static int test_provider_nst_extension_parser(void)
+{
+    SSL_CTX *ctx = NULL;
+    SSL *probe = NULL;
+    const SSL_CIPHER *provider_cipher = NULL, *builtin_cipher = NULL;
+    size_t i;
+    int ret = 0;
+
+    tls_provider_set_ciphersuite_mode("valid");
+    if (!TEST_ptr(ctx = SSL_CTX_new_ex(libctx, NULL,
+                      tlsv1_3_client_method()))
+        || !TEST_true(SSL_CTX_set_ciphersuites(ctx, TLS_TEST_CIPHERSUITE))
+        || !TEST_ptr(provider_cipher = ssl_provider_ciphersuite_by_name(ctx,
+                         TLS_TEST_CIPHERSUITE))
+        || !TEST_ptr(probe = SSL_new(ctx))
+        || !TEST_ptr(builtin_cipher = SSL_CIPHER_find(probe,
+                         builtin_ciphersuite_id)))
+        goto end;
+
+    for (i = 0; i < OSSL_NELEM(nst_extension_cases); i++) {
+        const struct nst_extension_case *test = &nst_extension_cases[i];
+        MSG_PROCESS_RETURN result;
+        uint32_t max_early_data = UINT32_MAX;
+
+        TEST_info("NST extension case: %s", test->name);
+        result = process_nst_extensions(ctx, provider_cipher,
+            test->extensions, test->extensions_len, &max_early_data);
+        if (!TEST_int_eq(result, test->expected)
+            || !TEST_uint_eq(max_early_data, 0))
+            goto end;
+        ERR_clear_error();
+        if (test->expected == MSG_PROCESS_ERROR
+            && !TEST_int_eq(process_nst_extensions(ctx, builtin_cipher,
+                                test->extensions, test->extensions_len, NULL),
+                test->expected))
+            goto end;
+        ERR_clear_error();
+    }
+
+    ret = 1;
+end:
+    SSL_free(probe);
+    SSL_CTX_free(ctx);
+    ERR_clear_error();
+    tls_provider_set_ciphersuite_mode(NULL);
+    return ret;
 }
 
 static int test_builtin_nonresumable_serialises(void)
@@ -299,6 +431,7 @@ int setup_tests(void)
     ADD_TEST(test_builtin_nonresumable_serialises);
     ADD_TEST(test_provider_nonresumption_gates);
     ADD_TEST(test_injected_ticket_preserves_marker);
+    ADD_TEST(test_provider_nst_extension_parser);
     return 1;
 }
 
