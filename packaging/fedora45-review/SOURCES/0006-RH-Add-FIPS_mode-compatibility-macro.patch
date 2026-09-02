@@ -1,0 +1,65 @@
+diff --git a/include/openssl/fips.h b/include/openssl/fips.h
+new file mode 100644
+index 0000000..4162cbf
+--- /dev/null
++++ b/include/openssl/fips.h
+@@ -0,0 +1,26 @@
++/*
++ * Copyright 2016-2020 The OpenSSL Project Authors. All Rights Reserved.
++ *
++ * Licensed under the Apache License 2.0 (the "License").  You may not use
++ * this file except in compliance with the License.  You can obtain a copy
++ * in the file LICENSE in the source distribution or at
++ * https://www.openssl.org/source/license.html
++ */
++
++#ifndef OPENSSL_FIPS_H
++# define OPENSSL_FIPS_H
++# pragma once
++
++# include <openssl/evp.h>
++# include <openssl/macros.h>
++
++# ifdef __cplusplus
++extern "C" {
++# endif
++
++# define FIPS_mode() EVP_default_properties_is_fips_enabled(NULL)
++
++# ifdef __cplusplus
++}
++# endif
++#endif
+
+diff --git a/test/property_test.c b/test/property_test.c
+index 58bc92f..e748571 100644
+--- a/test/property_test.c
++++ b/test/property_test.c
+@@ -971,6 +971,19 @@ err:
+     return ret;
+ }
+ 
++#include <openssl/fips.h>
++static int test_downstream_FIPS_mode(void)
++{
++    int ret = 0;
++
++    ret = TEST_true(EVP_set_default_properties(NULL, "fips=yes"))
++          && TEST_true(FIPS_mode())
++          && TEST_true(EVP_set_default_properties(NULL, "fips=no"))
++          && TEST_false(FIPS_mode());
++
++    return ret;
++}
++
+ int setup_tests(void)
+ {
+     ADD_TEST(test_property_string);
+@@ -990,6 +1003,7 @@ int setup_tests(void)
+     ADD_MFAIL_TEST(test_query_store_add_mfail);
+     ADD_MFAIL_TEST(test_query_cache_set_mfail);
+     ADD_TEST(test_fips_mode);
++    ADD_TEST(test_downstream_FIPS_mode);
+     ADD_ALL_TESTS(test_property_list_to_string, OSSL_NELEM(to_string_tests));
+     ADD_TEST(test_property_list_to_string_bounds);
+     return 1;

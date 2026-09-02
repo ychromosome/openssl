@@ -1,0 +1,32 @@
+diff --git a/test/evp_extra_test.c b/test/evp_extra_test.c
+index c65dd9c..2dc8c7d 100644
+--- a/test/evp_extra_test.c
++++ b/test/evp_extra_test.c
+@@ -5732,7 +5732,7 @@ static int setup_cipher_list(void)
+     cipher_list_n = 0;
+ 
+     /* first pass goes through counting only for allocating */
+-    EVP_CIPHER_do_all_provided(NULL, collect_cipher_cb, &cipher_list_size);
++    EVP_CIPHER_do_all_provided(testctx, collect_cipher_cb, &cipher_list_size);
+ 
+     if (!TEST_size_t_gt(cipher_list_size, 0))
+         return 0;
+@@ -5741,7 +5741,7 @@ static int setup_cipher_list(void)
+     if (!TEST_ptr(cipher_list))
+         return 0;
+ 
+-    EVP_CIPHER_do_all_provided(NULL, collect_cipher_cb, NULL);
++    EVP_CIPHER_do_all_provided(testctx, collect_cipher_cb, NULL);
+     return TEST_true(cipher_list_n > 0);
+ }
+ 
+@@ -9937,7 +9937,8 @@ int setup_tests(void)
+ 
+     ADD_TEST(test_names_do_all);
+ 
+-    setup_cipher_list();
++    if (!setup_cipher_list())
++        return 0;
+     ADD_ALL_TESTS(test_evp_diff_order_init, cipher_list_n);
+     ADD_ALL_TESTS(test_evp_stale_key_reinit, cipher_list_n);
+     ADD_ALL_TESTS(test_evp_decrypt_roundtrip_multistep, cipher_list_n);
