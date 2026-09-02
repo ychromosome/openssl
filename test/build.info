@@ -1372,6 +1372,14 @@ IF[{- !$disabled{tests} -}]
       IF[{- defined $target{shared_defflag} -}]
         SOURCE[tls-provider]=p_test.ld
       ENDIF
+      MODULES{noinst}=tls-provider-child
+      SOURCE[tls-provider-child]=tls-provider-module.c tls-provider.c
+      INCLUDE[tls-provider-child]=.. ../include ../apps/include
+      DEFINE[tls-provider-child]=TLS_PROVIDER_CHILD_LIBCTX
+      DEPEND[tls-provider-child]=../libcrypto
+      IF[{- defined $target{shared_defflag} -}]
+        SOURCE[tls-provider-child]=p_test.ld
+      ENDIF
     ENDIF
   ENDIF
   IF[{- $disabled{module} || !$target{dso_scheme} -}]

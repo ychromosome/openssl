@@ -268,8 +268,6 @@ static void context_deinit_objs(OSSL_LIB_CTX *ctx)
         ctx->provider_conf = NULL;
     }
 
-    ossl_provider_store_free_child_owners(ctx->provider_store);
-
     /*
      * P2. We want decoder_store/decoder_cache to be cleaned up before the
      * provider store
@@ -278,6 +276,9 @@ static void context_deinit_objs(OSSL_LIB_CTX *ctx)
         ossl_decoder_cache_free(ctx->decoder_cache);
         ctx->decoder_cache = NULL;
     }
+
+    ossl_provider_store_free_child_owners(ctx->provider_store);
+
     if (ctx->decoder_store != NULL) {
         ossl_method_store_free(ctx->decoder_store);
         ctx->decoder_store = NULL;
