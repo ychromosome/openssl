@@ -1329,9 +1329,11 @@ end:
 static int test_provider_ciphersuite_disables_ktls(void)
 {
     static const unsigned char message[] = "provider kTLS exclusion";
+    unsigned char received[sizeof(message)];
     SSL_CTX *sctx = NULL, *cctx = NULL;
     SSL *serverssl = NULL, *clientssl = NULL;
     SSL_CONNECTION *clientsc;
+    size_t written = 0, readbytes = 0;
     int cfd = -1, sfd = -1, ret = 0;
 
     if (!TEST_true(create_test_sockets(&cfd, &sfd, SOCK_STREAM, NULL)))
@@ -1383,7 +1385,12 @@ static int test_provider_ciphersuite_disables_ktls(void)
         || !TEST_int_eq(SSL_get_current_cipher(clientssl)->origin,
             SSL_CIPHER_ORIGIN_PROVIDER)
         || !TEST_false(BIO_get_ktls_send(clientsc->wbio))
-        || !exchange_data(clientssl, serverssl, message, sizeof(message)))
+        || !TEST_true(SSL_write_ex(clientssl, message, sizeof(message),
+            &written))
+        || !TEST_size_t_eq(written, sizeof(message))
+        || !TEST_true(SSL_read_ex(serverssl, received, sizeof(received),
+            &readbytes))
+        || !TEST_mem_eq(received, readbytes, message, sizeof(message)))
         goto end;
     ret = 1;
 
