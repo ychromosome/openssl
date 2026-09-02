@@ -14,6 +14,7 @@
 #include <openssl/err.h>
 #include <openssl/provider.h>
 #include <openssl/ssl.h>
+#include "internal/ktls.h"
 #include "internal/ssl_unwrap.h"
 #include "../ssl/ssl_local.h"
 #include "../ssl/record/methods/recmethod_local.h"
@@ -122,6 +123,83 @@ static OSSL_PROVIDER *load_tls_provider(OSSL_LIB_CTX *ctx, const char *name,
 #define TLS_TEST_AEAD128_NAME "TLS-TEST-AES-128-GCM"
 #define TLS_TEST_OVERSIZED_AEAD_NAME "TLS-TEST-AEAD-65"
 #define TLS_TEST_MANY_COUNT 128
+
+static int corrupt_records;
+static BIO_METHOD *corrupt_filter_method;
+
+static void copy_retry_flags(BIO *bio)
+{
+    BIO *next = BIO_next(bio);
+    int flags = BIO_test_flags(next, BIO_FLAGS_SHOULD_RETRY | BIO_FLAGS_RWS);
+
+    BIO_clear_flags(bio, BIO_FLAGS_SHOULD_RETRY | BIO_FLAGS_RWS);
+    BIO_set_flags(bio, flags);
+}
+
+static int corrupt_filter_read(BIO *bio, char *out, int outl)
+{
+    int ret = BIO_read(BIO_next(bio), out, outl);
+
+    copy_retry_flags(bio);
+    return ret;
+}
+
+static int corrupt_filter_write(BIO *bio, const char *in, int inl)
+{
+    BIO *next = BIO_next(bio);
+    unsigned char *copy = NULL;
+    int ret;
+
+    if (!corrupt_records || inl <= 0) {
+        ret = BIO_write(next, in, inl);
+    } else {
+        copy = OPENSSL_memdup(in, (size_t)inl);
+        if (copy == NULL)
+            return 0;
+        copy[inl - 1] ^= 1;
+        ret = BIO_write(next, copy, inl);
+        OPENSSL_free(copy);
+    }
+    copy_retry_flags(bio);
+    return ret;
+}
+
+static long corrupt_filter_ctrl(BIO *bio, int cmd, long num, void *ptr)
+{
+    BIO *next = BIO_next(bio);
+
+    return next == NULL ? 0 : BIO_ctrl(next, cmd, num, ptr);
+}
+
+static int corrupt_filter_new(BIO *bio)
+{
+    BIO_set_init(bio, 1);
+    return 1;
+}
+
+static int corrupt_filter_free(BIO *bio)
+{
+    BIO_set_init(bio, 0);
+    return 1;
+}
+
+static const BIO_METHOD *corrupt_filter(void)
+{
+    if (corrupt_filter_method == NULL) {
+        corrupt_filter_method = BIO_meth_new(BIO_TYPE_FILTER,
+            "TLS record corruption filter");
+        if (corrupt_filter_method == NULL
+            || !BIO_meth_set_read(corrupt_filter_method, corrupt_filter_read)
+            || !BIO_meth_set_write(corrupt_filter_method,
+                corrupt_filter_write)
+            || !BIO_meth_set_ctrl(corrupt_filter_method, corrupt_filter_ctrl)
+            || !BIO_meth_set_create(corrupt_filter_method, corrupt_filter_new)
+            || !BIO_meth_set_destroy(corrupt_filter_method,
+                corrupt_filter_free))
+            return NULL;
+    }
+    return corrupt_filter_method;
+}
 
 static int test_provider_aead_kat(void)
 {
@@ -404,7 +482,7 @@ static int test_provider_registry_indexes(void)
     OSSL_PROVIDER *localdef = NULL, *localtls = NULL;
     SSL_CTX *ctx = NULL;
     const SSL_CIPHER *by_id, *by_name;
-    char name[64];
+    char name[64], description[256];
     uint32_t id;
     int i, ret = 0;
 
@@ -449,6 +527,17 @@ static int test_provider_registry_indexes(void)
         || !TEST_ptr_null(ssl_provider_ciphersuite_by_name(ctx,
             "TLS_TEST_PROVIDER_INDEX_MISSING"))
         || !TEST_ulong_eq(ERR_peek_error(), 0))
+        goto end;
+
+    by_id = ssl_provider_ciphersuite_by_id(
+        ctx, SSL3_CK_CIPHERSUITE_FLAG | 0xff00U);
+    if (!TEST_ptr(by_id)
+        || !TEST_ptr_null(SSL_CIPHER_standard_name(by_id))
+        || !TEST_int_eq(SSL_CIPHER_get_digest_nid(by_id), NID_undef)
+        || !TEST_true(SSL_CIPHER_is_aead(by_id))
+        || !TEST_ptr(SSL_CIPHER_get_handshake_digest(by_id))
+        || !TEST_ptr(SSL_CIPHER_description(
+            by_id, description, sizeof(description))))
         goto end;
 
     ret = 1;
@@ -1129,6 +1218,189 @@ end:
 #endif
 }
 
+static int test_provider_record_tamper(void)
+{
+    static const unsigned char message[] = "provider record tamper";
+    unsigned char received[sizeof(message)];
+    SSL_CTX *sctx = NULL, *cctx = NULL;
+    SSL *serverssl = NULL, *clientssl = NULL;
+    BIO *filter = NULL;
+    size_t written = 0, readbytes = 0;
+    unsigned long error;
+    int ret = 0;
+
+    if (!TEST_true(create_ssl_ctx_pair(libctx, TLS_server_method(),
+            TLS_client_method(), TLS1_3_VERSION, TLS1_3_VERSION,
+            &sctx, &cctx, cert, privkey))
+        || !TEST_true(SSL_CTX_set_ciphersuites(sctx, TLS_TEST_SHA256_NAME))
+        || !TEST_true(SSL_CTX_set_ciphersuites(cctx, TLS_TEST_SHA256_NAME))
+        || !TEST_true(SSL_CTX_set_num_tickets(sctx, 0))
+        || !TEST_ptr(filter = BIO_new(corrupt_filter()))
+        || !TEST_true(create_ssl_objects(sctx, cctx, &serverssl, &clientssl,
+            NULL, filter))
+        || !TEST_true(create_ssl_connection(serverssl, clientssl,
+            SSL_ERROR_NONE)))
+        goto end;
+    filter = NULL;
+
+    corrupt_records = 1;
+    if (!TEST_true(SSL_write_ex(clientssl, message, sizeof(message), &written))
+        || !TEST_size_t_eq(written, sizeof(message)))
+        goto end;
+    ERR_clear_error();
+    if (!TEST_false(SSL_read_ex(serverssl, received, sizeof(received),
+            &readbytes)))
+        goto end;
+    do {
+        error = ERR_get_error();
+        if (error == 0) {
+            TEST_error("bad record MAC error not found");
+            goto end;
+        }
+    } while (ERR_GET_REASON(error)
+        != SSL_R_DECRYPTION_FAILED_OR_BAD_RECORD_MAC);
+    ret = 1;
+
+end:
+    corrupt_records = 0;
+    BIO_free(filter);
+    SSL_free(serverssl);
+    SSL_free(clientssl);
+    SSL_CTX_free(sctx);
+    SSL_CTX_free(cctx);
+    ERR_clear_error();
+    return ret;
+}
+
+static int test_provider_large_fragmented_record(void)
+{
+    SSL_CTX *sctx = NULL, *cctx = NULL;
+    SSL *serverssl = NULL, *clientssl = NULL;
+    unsigned char *message = NULL, *received = NULL;
+    size_t written = 0, readbytes = 0, total = 0, i;
+    int ret = 0;
+
+    message = OPENSSL_malloc(SSL3_RT_MAX_PLAIN_LENGTH);
+    received = OPENSSL_malloc(SSL3_RT_MAX_PLAIN_LENGTH);
+    if (!TEST_ptr(message) || !TEST_ptr(received))
+        goto end;
+    for (i = 0; i < SSL3_RT_MAX_PLAIN_LENGTH; i++)
+        message[i] = (unsigned char)i;
+
+    if (!TEST_true(create_ssl_ctx_pair(libctx, TLS_server_method(),
+            TLS_client_method(), TLS1_3_VERSION, TLS1_3_VERSION,
+            &sctx, &cctx, cert, privkey))
+        || !TEST_true(SSL_CTX_set_ciphersuites(sctx, TLS_TEST_SHA256_NAME))
+        || !TEST_true(SSL_CTX_set_ciphersuites(cctx, TLS_TEST_SHA256_NAME))
+        || !TEST_true(SSL_CTX_set_num_tickets(sctx, 0))
+        || !TEST_true(create_ssl_objects(sctx, cctx, &serverssl, &clientssl,
+            NULL, NULL))
+        || !TEST_true(SSL_set_max_send_fragment(clientssl, 512))
+        || !TEST_true(create_ssl_connection(serverssl, clientssl,
+            SSL_ERROR_NONE))
+        || !TEST_true(SSL_write_ex(clientssl, message,
+            SSL3_RT_MAX_PLAIN_LENGTH, &written))
+        || !TEST_size_t_eq(written, SSL3_RT_MAX_PLAIN_LENGTH))
+        goto end;
+
+    while (total < SSL3_RT_MAX_PLAIN_LENGTH) {
+        if (!TEST_true(SSL_read_ex(serverssl, received + total,
+                SSL3_RT_MAX_PLAIN_LENGTH - total, &readbytes))
+            || !TEST_size_t_gt(readbytes, 0))
+            goto end;
+        total += readbytes;
+    }
+    if (!TEST_mem_eq(received, total, message, SSL3_RT_MAX_PLAIN_LENGTH))
+        goto end;
+    ret = 1;
+
+end:
+    OPENSSL_free(message);
+    OPENSSL_free(received);
+    SSL_free(serverssl);
+    SSL_free(clientssl);
+    SSL_CTX_free(sctx);
+    SSL_CTX_free(cctx);
+    ERR_clear_error();
+    return ret;
+}
+
+#if !defined(OPENSSL_NO_SOCK) && !defined(OPENSSL_NO_KTLS)
+static int test_provider_ciphersuite_disables_ktls(void)
+{
+    static const unsigned char message[] = "provider kTLS exclusion";
+    SSL_CTX *sctx = NULL, *cctx = NULL;
+    SSL *serverssl = NULL, *clientssl = NULL;
+    SSL_CONNECTION *clientsc;
+    int cfd = -1, sfd = -1, ret = 0;
+
+    if (!TEST_true(create_test_sockets(&cfd, &sfd, SOCK_STREAM, NULL)))
+        goto end;
+    if (!ktls_enable(cfd)) {
+        ret = TEST_skip("Kernel does not support kTLS");
+        goto end;
+    }
+    if (!TEST_true(create_ssl_ctx_pair(libctx, TLS_server_method(),
+            TLS_client_method(), TLS1_3_VERSION, TLS1_3_VERSION,
+            &sctx, &cctx, cert, privkey))
+        || !TEST_true(SSL_CTX_set_ciphersuites(sctx, "TLS_AES_128_GCM_SHA256"))
+        || !TEST_true(SSL_CTX_set_ciphersuites(cctx, "TLS_AES_128_GCM_SHA256"))
+        || !TEST_true(create_ssl_objects2(sctx, cctx, &serverssl, &clientssl,
+            sfd, cfd))
+        || !TEST_true(SSL_set_options(clientssl, SSL_OP_ENABLE_KTLS))
+        || !TEST_true(create_ssl_connection(serverssl, clientssl,
+            SSL_ERROR_NONE))
+        || !TEST_ptr(clientsc = SSL_CONNECTION_FROM_SSL_ONLY(clientssl)))
+        goto end;
+    if (!BIO_get_ktls_send(clientsc->wbio)) {
+        ret = TEST_skip("Kernel does not offload AES-128-GCM");
+        goto end;
+    }
+
+    SSL_free(serverssl);
+    SSL_free(clientssl);
+    SSL_CTX_free(sctx);
+    SSL_CTX_free(cctx);
+    BIO_closesocket(sfd);
+    BIO_closesocket(cfd);
+    serverssl = clientssl = NULL;
+    sctx = cctx = NULL;
+    sfd = cfd = -1;
+
+    if (!TEST_true(create_test_sockets(&cfd, &sfd, SOCK_STREAM, NULL))
+        || !TEST_true(ktls_enable(cfd))
+        || !TEST_true(create_ssl_ctx_pair(libctx, TLS_server_method(),
+            TLS_client_method(), TLS1_3_VERSION, TLS1_3_VERSION,
+            &sctx, &cctx, cert, privkey))
+        || !TEST_true(SSL_CTX_set_ciphersuites(sctx, TLS_TEST_SHA256_NAME))
+        || !TEST_true(SSL_CTX_set_ciphersuites(cctx, TLS_TEST_SHA256_NAME))
+        || !TEST_true(create_ssl_objects2(sctx, cctx, &serverssl, &clientssl,
+            sfd, cfd))
+        || !TEST_true(SSL_set_options(clientssl, SSL_OP_ENABLE_KTLS))
+        || !TEST_true(create_ssl_connection(serverssl, clientssl,
+            SSL_ERROR_NONE))
+        || !TEST_ptr(clientsc = SSL_CONNECTION_FROM_SSL_ONLY(clientssl))
+        || !TEST_int_eq(SSL_get_current_cipher(clientssl)->origin,
+            SSL_CIPHER_ORIGIN_PROVIDER)
+        || !TEST_false(BIO_get_ktls_send(clientsc->wbio))
+        || !exchange_data(clientssl, serverssl, message, sizeof(message)))
+        goto end;
+    ret = 1;
+
+end:
+    SSL_free(serverssl);
+    SSL_free(clientssl);
+    SSL_CTX_free(sctx);
+    SSL_CTX_free(cctx);
+    if (sfd != -1)
+        BIO_closesocket(sfd);
+    if (cfd != -1)
+        BIO_closesocket(cfd);
+    ERR_clear_error();
+    return ret;
+}
+#endif
+
 static int test_provider_unload_lifetime(void)
 {
     static const unsigned char message[] = "provider unloaded";
@@ -1260,6 +1532,11 @@ int setup_tests(void)
     ADD_TEST(test_tls12_exclusion);
     ADD_TEST(test_quic_exclusion);
     ADD_TEST(test_dtls_exclusion);
+    ADD_TEST(test_provider_record_tamper);
+    ADD_TEST(test_provider_large_fragmented_record);
+#if !defined(OPENSSL_NO_SOCK) && !defined(OPENSSL_NO_KTLS)
+    ADD_TEST(test_provider_ciphersuite_disables_ktls);
+#endif
     ADD_TEST(test_late_provider_load_not_discovered);
     ADD_TEST(test_provider_unload_lifetime);
     return 1;
@@ -1267,6 +1544,7 @@ int setup_tests(void)
 
 void cleanup_tests(void)
 {
+    BIO_meth_free(corrupt_filter_method);
     if (tlsprov != NULL)
         OSSL_PROVIDER_unload(tlsprov);
     OSSL_PROVIDER_unload(defprov);
