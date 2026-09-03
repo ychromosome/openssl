@@ -1600,7 +1600,7 @@ int SSL_CTX_set_ciphersuites(SSL_CTX *ctx, const char *str)
 
 int SSL_set_ciphersuites(SSL *s, const char *str)
 {
-    STACK_OF(SSL_CIPHER) *newciphers;
+    STACK_OF(SSL_CIPHER) *newciphers, *cipher_list, *inherited = NULL;
     SSL_CONNECTION *sc = SSL_CONNECTION_FROM_SSL(s);
 
     if (sc == NULL)
@@ -1609,18 +1609,36 @@ int SSL_set_ciphersuites(SSL *s, const char *str)
     newciphers = parse_ciphersuites(sc->session_ctx, str);
     if (newciphers == NULL)
         return 0;
-    if (!ossl_assert(sc->cipher_list != NULL
-            && sc->cipher_list_by_id != NULL)) {
-        ERR_raise(ERR_LIB_SSL, ERR_R_INTERNAL_ERROR);
-        sk_SSL_CIPHER_free(newciphers);
-        return 0;
+
+    /*
+     * An SSL without its own cipher list follows the list of its current
+     * SSL_CTX, also after SSL_set_SSL_CTX().  Create the per-SSL list only
+     * now, from that context list, and canonicalise provider descriptors
+     * to the registry of the connection's session_ctx.
+     */
+    cipher_list = sc->cipher_list;
+    if (cipher_list == NULL) {
+        if ((cipher_list = SSL_get_ciphers(s)) == NULL
+            || (inherited = sk_SSL_CIPHER_dup(cipher_list)) == NULL) {
+            ERR_raise(ERR_LIB_SSL, ERR_R_CRYPTO_LIB);
+            sk_SSL_CIPHER_free(newciphers);
+            return 0;
+        }
+        if (!ssl_cipher_stack_canon(sc, inherited)) {
+            ERR_raise(ERR_LIB_SSL, SSL_R_INVALID_CONTEXT);
+            sk_SSL_CIPHER_free(inherited);
+            sk_SSL_CIPHER_free(newciphers);
+            return 0;
+        }
+        cipher_list = inherited;
     }
-    if (!update_cipher_list(s->ctx, &sc->cipher_list,
-            &sc->cipher_list_by_id,
+    if (!update_cipher_list(s->ctx, &cipher_list, &sc->cipher_list_by_id,
             newciphers)) {
+        sk_SSL_CIPHER_free(inherited);
         sk_SSL_CIPHER_free(newciphers);
         return 0;
     }
+    sc->cipher_list = cipher_list;
 
     sk_SSL_CIPHER_free(sc->tls13_ciphersuites);
     sc->tls13_ciphersuites = newciphers;

@@ -88,18 +88,23 @@ The capability does not supply a standard name, so
 `SSL_CIPHER_standard_name()` returns `NULL`.
 
 Wire IDs resolve through the connection's original `session_ctx`.
-`SSL_set_SSL_CTX()` keeps its existing behavior and does not replace that
-registry. Switching to a context with a different library context or property
-query is outside this version's contract.
+`SSL_set_SSL_CTX()` keeps its existing behavior: it does not replace that
+registry, and an SSL without a per-connection cipher list follows the cipher
+list of its current `SSL_CTX`, so the policy of a context selected by a
+servername callback applies to the handshake. Switching to a context with a
+different library context or property query is outside this version's
+contract.
 
 Ownership and sessions
 ----------------------
 
 The context registry owns each descriptor. A descriptor retains its AEAD and
 digest. `SSL_SESSION` holds a counted descriptor reference. Per-connection
-cipher stacks are shallow copies whose provider elements remain owned by the
-connection's `session_ctx`. They keep values returned by `SSL_get_ciphers()`
-valid across `SSL_set_SSL_CTX()`.
+cipher stacks exist only after `SSL_set_cipher_list()` or
+`SSL_set_ciphersuites()`; they are shallow copies whose provider elements are
+canonicalised to, and owned by, the connection's `session_ctx`. As upstream,
+a stack returned by `SSL_get_ciphers()` for an SSL without its own list is
+owned by the current `SSL_CTX`.
 
 Once a session has held a provider suite, it cannot be resumed, cached,
 serialised or ticketed. This state survives session duplication and later

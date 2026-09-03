@@ -841,22 +841,6 @@ SSL *ossl_ssl_connection_new_int(SSL_CTX *ctx, SSL *user_ssl,
         goto cerr;
 
     /*
-     * Keep the SSL cipher views stable for the SSL lifetime.  In particular,
-     * do not expose provider descriptors owned only by an intermediate
-     * SSL_CTX that SSL_set_SSL_CTX() may later release.
-     */
-    if (ctx->cipher_list != NULL) {
-        s->cipher_list = sk_SSL_CIPHER_dup(ctx->cipher_list);
-        if (s->cipher_list == NULL)
-            goto cerr;
-    }
-    if (ctx->cipher_list_by_id != NULL) {
-        s->cipher_list_by_id = sk_SSL_CIPHER_dup(ctx->cipher_list_by_id);
-        if (s->cipher_list_by_id == NULL)
-            goto cerr;
-    }
-
-    /*
      * Earlier library versions used to copy the pointer to the CERT, not
      * its contents; only when setting new parameters for the per-SSL
      * copy, ssl_cert_new would be called (and the direct reference to

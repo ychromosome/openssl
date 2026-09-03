@@ -770,6 +770,17 @@ end:
     return ret;
 }
 
+/*
+ * idx 0: the callback sets per-SSL ciphersuites and cipher list and
+ *        switches twice.
+ * idx 1: HRR; the selected context enables the provider suite at context
+ *        level and nothing is set on the SSL.
+ * idx 2: the callback sets per-SSL ciphersuites and switches twice.
+ * idx 3: the selected context does not enable the provider suite. TLS 1.3
+ *        selects the ciphersuite before the servername callback runs, so the
+ *        canonical descriptor stays negotiated.
+ * The callback releases the contexts it switched to; the SSL keeps them alive.
+ */
 static int test_sni_context_switch(int idx)
 {
     SSL_CTX *sctx = NULL, *cctx = NULL;
@@ -793,7 +804,7 @@ static int test_sni_context_switch(int idx)
                          SSL3_CK_CIPHERSUITE_FLAG | 0xffa0U)))
         goto end;
 
-    if (idx != 1 && idx != 3) {
+    if (idx == 0 || idx == 2) {
         data.set_ciphersuites = 1;
         data.set_cipher_list = idx == 0;
         if (!TEST_true(create_ssl_ctx_pair(libctx, TLS_server_method(), NULL,
@@ -807,6 +818,25 @@ static int test_sni_context_switch(int idx)
             || !TEST_true(SSL_CTX_set_ciphersuites(data.second,
                 TLS_TEST_SHA256_NAME)))
             goto end;
+    } else if (idx == 1) {
+        if (!TEST_true(create_ssl_ctx_pair(libctx, TLS_server_method(), NULL,
+                TLS1_3_VERSION, TLS1_3_VERSION, &data.first, NULL,
+                cert, privkey))
+            || !TEST_true(SSL_CTX_set_ciphersuites(data.first,
+                TLS_TEST_SHA256_NAME)))
+            goto end;
+        /* Trigger HRR after the context switch. */
+#ifndef OPENSSL_NO_EC
+        if (!TEST_true(SSL_CTX_set1_groups_list(cctx,
+                "secp521r1:secp384r1:X25519:prime256v1:X448"))
+            || !TEST_true(SSL_CTX_set1_groups_list(sctx,
+                "X25519:secp384r1:prime256v1")))
+            goto end;
+#else
+        if (!TEST_true(SSL_CTX_set1_groups_list(cctx, "ffdhe2048:ffdhe3072"))
+            || !TEST_true(SSL_CTX_set1_groups_list(sctx, "ffdhe3072")))
+            goto end;
+#endif
     } else {
         if (!TEST_ptr(data.first = SSL_CTX_new_ex(libctx, "provider=default",
                           TLS_server_method()))
@@ -816,20 +846,6 @@ static int test_sni_context_switch(int idx)
             || !TEST_int_eq(sk_SSL_CIPHER_num(
                                 data.first->provider_ciphersuites),
                 0))
-            goto end;
-        /* Trigger HRR after the context switch. */
-        if (idx == 1
-#ifndef OPENSSL_NO_EC
-            && (!TEST_true(SSL_CTX_set1_groups_list(cctx,
-                    "secp521r1:secp384r1:X25519:prime256v1:X448"))
-                || !TEST_true(SSL_CTX_set1_groups_list(sctx,
-                    "X25519:secp384r1:prime256v1"))))
-#else
-            && (!TEST_true(SSL_CTX_set1_groups_list(cctx,
-                    "ffdhe2048:ffdhe3072"))
-                || !TEST_true(SSL_CTX_set1_groups_list(sctx,
-                    "ffdhe3072"))))
-#endif
             goto end;
     }
 
@@ -853,7 +869,6 @@ static int test_sni_context_switch(int idx)
         || !TEST_ptr(negotiated = SSL_get_current_cipher(serverssl))
         || !TEST_ptr_eq(negotiated, expected))
         goto end;
-
     ret = 1;
 end:
     SSL_free(serverssl);
@@ -866,58 +881,78 @@ end:
     return ret;
 }
 
+static const SSL_CIPHER *find_provider_cipher(STACK_OF(SSL_CIPHER) *sk)
+{
+    int i;
+
+    for (i = 0; i < sk_SSL_CIPHER_num(sk); i++) {
+        const SSL_CIPHER *cipher = sk_SSL_CIPHER_value(sk, i);
+
+        if (cipher->origin == SSL_CIPHER_ORIGIN_PROVIDER)
+            return cipher;
+    }
+    return NULL;
+}
+
+/*
+ * An SSL without its own cipher list follows the list of its current
+ * SSL_CTX across SSL_set_SSL_CTX(); a list set on the SSL persists and holds
+ * canonical descriptors.
+ */
 static int test_switched_context_supported_ciphers(void)
 {
     SSL_CTX *initial = NULL, *alternate = NULL;
     SSL *ssl = NULL;
-    STACK_OF(SSL_CIPHER) *supported = NULL, *borrowed = NULL;
-    const SSL_CIPHER *canonical, *listed = NULL, *borrowed_provider = NULL;
-    const char *borrowed_name = NULL;
-    int i, borrowed_idx = -1, ret = 0;
+    STACK_OF(SSL_CIPHER) *supported = NULL, *borrowed;
+    const SSL_CIPHER *canonical, *listed;
+    int ret = 0;
 
     if (!TEST_ptr(initial = SSL_CTX_new_ex(libctx, NULL, TLS_method()))
         || !TEST_true(SSL_CTX_set_ciphersuites(initial,
             TLS_TEST_SHA256_NAME))
         || !TEST_ptr(canonical = ssl_provider_ciphersuite_by_name(initial,
                          TLS_TEST_SHA256_NAME))
-        || !TEST_ptr(ssl = SSL_new(initial)))
+        || !TEST_ptr(ssl = SSL_new(initial))
+        || !TEST_ptr(alternate = SSL_CTX_new_ex(libctx, "provider=default",
+                         TLS_method())))
         goto end;
-    if (!TEST_ptr(alternate = SSL_CTX_new_ex(libctx, "provider=default",
-                      TLS_method())))
-        goto end;
-    borrowed = SSL_get_ciphers(ssl);
-    if (!TEST_ptr(borrowed))
-        goto end;
-    for (i = 0; i < sk_SSL_CIPHER_num(borrowed); i++) {
-        borrowed_provider = sk_SSL_CIPHER_value(borrowed, i);
-        if (borrowed_provider->origin == SSL_CIPHER_ORIGIN_PROVIDER) {
-            borrowed_idx = i;
-            break;
-        }
-    }
-    if (!TEST_int_ge(borrowed_idx, 0)
-        || !TEST_ptr(borrowed_name = SSL_get_cipher_list(ssl, borrowed_idx))
-        || !TEST_ptr(SSL_set_SSL_CTX(ssl, alternate))
-        || !TEST_ptr(supported = SSL_get1_supported_ciphers(ssl)))
-        goto end;
-    for (i = 0; i < sk_SSL_CIPHER_num(supported); i++) {
-        const SSL_CIPHER *candidate = sk_SSL_CIPHER_value(supported, i);
 
-        if (candidate->origin == SSL_CIPHER_ORIGIN_PROVIDER) {
-            listed = candidate;
-            break;
-        }
-    }
-    SSL_CTX_free(alternate);
-    alternate = NULL;
-    if (!TEST_ptr_eq(listed, canonical)
-        || !TEST_ptr(SSL_set_SSL_CTX(ssl, NULL))
-        || !TEST_ptr_eq(sk_SSL_CIPHER_value(borrowed, borrowed_idx),
-            canonical)
-        || !TEST_str_eq(SSL_CIPHER_get_name(borrowed_provider),
-            TLS_TEST_SHA256_NAME)
-        || !TEST_str_eq(borrowed_name, TLS_TEST_SHA256_NAME)
+    /* Without a per-SSL list the SSL borrows the list of its context. */
+    if (!TEST_ptr(borrowed = SSL_get_ciphers(ssl))
+        || !TEST_ptr_eq(borrowed, SSL_CTX_get_ciphers(initial))
+        || !TEST_ptr_eq(find_provider_cipher(borrowed), canonical))
+        goto end;
+
+    /* After a switch the SSL follows the list of the new context. */
+    if (!TEST_ptr(SSL_set_SSL_CTX(ssl, alternate))
+        || !TEST_ptr_eq(SSL_get_ciphers(ssl), SSL_CTX_get_ciphers(alternate))
+        || !TEST_ptr(supported = SSL_get1_supported_ciphers(ssl))
+        || !TEST_ptr_null(find_provider_cipher(supported)))
+        goto end;
+    sk_SSL_CIPHER_free(supported);
+    supported = NULL;
+
+    /*
+     * Switching back restores the original view. The borrowed stack stayed
+     * valid because session_ctx keeps the initial context alive.
+     */
+    if (!TEST_ptr(SSL_set_SSL_CTX(ssl, NULL))
+        || !TEST_ptr_eq(SSL_get_ciphers(ssl), borrowed)
+        || !TEST_ptr(supported = SSL_get1_supported_ciphers(ssl))
+        || !TEST_ptr(listed = find_provider_cipher(supported))
+        || !TEST_ptr_eq(listed, canonical)
         || !TEST_str_eq(SSL_CIPHER_get_name(listed), TLS_TEST_SHA256_NAME))
+        goto end;
+    sk_SSL_CIPHER_free(supported);
+    supported = NULL;
+
+    /* A list set on the SSL persists across a switch and is canonical. */
+    if (!TEST_true(SSL_set_ciphersuites(ssl, TLS_TEST_SHA256_NAME))
+        || !TEST_ptr_ne(SSL_get_ciphers(ssl), borrowed)
+        || !TEST_ptr(SSL_set_SSL_CTX(ssl, alternate))
+        || !TEST_ptr_ne(SSL_get_ciphers(ssl), SSL_CTX_get_ciphers(alternate))
+        || !TEST_ptr(supported = SSL_get1_supported_ciphers(ssl))
+        || !TEST_ptr_eq(find_provider_cipher(supported), canonical))
         goto end;
 
     ret = 1;
@@ -928,6 +963,97 @@ end:
     SSL_CTX_free(alternate);
     ERR_clear_error();
     return ret;
+}
+
+static int sni_policy_cb(SSL *ssl, int *alert, void *arg)
+{
+    if (SSL_set_SSL_CTX(ssl, arg) == NULL) {
+        *alert = SSL_AD_INTERNAL_ERROR;
+        return SSL_TLSEXT_ERR_ALERT_FATAL;
+    }
+    return SSL_TLSEXT_ERR_OK;
+}
+
+/*
+ * The cipher list of an SSL_CTX selected by the servername callback applies
+ * to a TLS 1.2 handshake when nothing is set on the SSL, without any provider
+ * suite involved.
+ * idx 0: the selected context permits the client's only cipher.
+ * idx 1: the selected context does not; the handshake must fail.
+ */
+static int test_sni_switch_cipher_list_policy(int idx)
+{
+#ifdef OPENSSL_NO_TLS1_2
+    return TEST_skip("TLS 1.2 is disabled");
+#else
+    SSL_CTX *sctx = NULL, *cctx = NULL, *target = NULL;
+    SSL *serverssl = NULL, *clientssl = NULL;
+    const SSL_CIPHER *negotiated;
+    const char *policy = idx == 0 ? "ALL:@SECLEVEL=0"
+                                  : "AES256-SHA:@SECLEVEL=0";
+    unsigned long error;
+    int i, rc = 1, ret = 0;
+
+    if (!TEST_true(create_ssl_ctx_pair(libctx, TLS_server_method(),
+            TLS_client_method(), TLS1_2_VERSION, TLS1_2_VERSION,
+            &sctx, &cctx, cert, privkey))
+        || !TEST_true(SSL_CTX_set_cipher_list(sctx, "ALL:@SECLEVEL=0"))
+        || !TEST_true(SSL_CTX_set_cipher_list(cctx,
+            "AES128-SHA:@SECLEVEL=0"))
+        || !TEST_true(create_ssl_ctx_pair(libctx, TLS_server_method(), NULL,
+            TLS1_2_VERSION, TLS1_2_VERSION, &target, NULL, cert, privkey))
+        || !TEST_true(SSL_CTX_set_cipher_list(target, policy))
+        || !TEST_true(SSL_CTX_set_tlsext_servername_callback(sctx,
+            sni_policy_cb))
+        || !TEST_true(SSL_CTX_set_tlsext_servername_arg(sctx, target))
+        || !TEST_true(create_ssl_objects(sctx, cctx, &serverssl, &clientssl,
+            NULL, NULL))
+        || !TEST_true(SSL_set_tlsext_host_name(clientssl, "policy.example")))
+        goto end;
+
+    if (idx == 0) {
+        if (!TEST_true(create_ssl_connection(serverssl, clientssl,
+                SSL_ERROR_NONE))
+            || !TEST_ptr_eq(SSL_get_SSL_CTX(serverssl), target)
+            || !TEST_ptr_eq(SSL_get_ciphers(serverssl),
+                SSL_CTX_get_ciphers(target))
+            || !TEST_ptr(negotiated = SSL_get_current_cipher(serverssl))
+            || !TEST_str_eq(SSL_CIPHER_get_name(negotiated), "AES128-SHA"))
+            goto end;
+    } else {
+        /* Drive the handshake by hand to observe the server's failure. */
+        ERR_clear_error();
+        for (i = 0; i < 4; i++) {
+            (void)SSL_connect(clientssl);
+            rc = SSL_accept(serverssl);
+            if (rc <= 0 && SSL_get_error(serverssl, rc) == SSL_ERROR_SSL)
+                break;
+        }
+        if (!TEST_int_le(rc, 0)
+            || !TEST_ptr_eq(SSL_get_SSL_CTX(serverssl), target)
+            || !TEST_ptr_eq(SSL_get_ciphers(serverssl),
+                SSL_CTX_get_ciphers(target)))
+            goto end;
+        do {
+            error = ERR_get_error();
+            if (error == 0) {
+                TEST_error("no shared cipher error not found");
+                goto end;
+            }
+        } while (ERR_GET_LIB(error) != ERR_LIB_SSL
+            || ERR_GET_REASON(error) != SSL_R_NO_SHARED_CIPHER);
+    }
+
+    ret = 1;
+end:
+    SSL_free(serverssl);
+    SSL_free(clientssl);
+    SSL_CTX_free(sctx);
+    SSL_CTX_free(cctx);
+    SSL_CTX_free(target);
+    ERR_clear_error();
+    return ret;
+#endif
 }
 
 static int test_post_handshake_context_switch(void)
@@ -1532,6 +1658,7 @@ int setup_tests(void)
     ADD_TEST(test_provider_hrr);
     ADD_ALL_TESTS(test_sni_context_switch, 4);
     ADD_TEST(test_switched_context_supported_ciphers);
+    ADD_ALL_TESTS(test_sni_switch_cipher_list_policy, 2);
     ADD_TEST(test_post_handshake_context_switch);
     ADD_TEST(test_ssl_dup_canonicalisation);
     ADD_TEST(test_ssl_dup_rejects_foreign_ciphersuite);
