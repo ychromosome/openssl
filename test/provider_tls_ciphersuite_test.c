@@ -810,8 +810,8 @@ end:
  * idx 1: HRR; the selected context enables the provider suite at context
  *        level and nothing is set on the SSL.
  * idx 2: the callback sets per-SSL ciphersuites and switches twice.
- * idx 3: the selected context does not enable the provider suite; the final
- *        servername check rejects the handshake.
+ * idx 3: the selected context does not enable the provider suite. TLS 1.3
+ *        selects the suite before the callback; the saved selection persists.
  * The callback releases the contexts it switched to; the SSL keeps them alive.
  */
 static int test_sni_context_switch(int idx)
@@ -899,22 +899,15 @@ static int test_sni_context_switch(int idx)
     SSL_CTX_free(cctx);
     cctx = NULL;
 
-    if (idx == 3) {
-        if (!TEST_true(expect_no_shared_cipher(serverssl, clientssl))
-            || !TEST_int_eq(data.calls, 1)
-            || !TEST_ptr_eq(SSL_get_SSL_CTX(serverssl), selected_ctx))
-            goto end;
-    } else {
-        if (!TEST_true(create_ssl_connection(serverssl, clientssl,
-                SSL_ERROR_NONE))
-            || !TEST_int_eq(data.calls, idx == 1 ? 2 : 1)
-            || !TEST_ptr(negotiated = SSL_get_current_cipher(serverssl))
-            || !TEST_ptr_eq(negotiated, expected))
-            goto end;
-        if (idx == 1
-            && !TEST_ptr_eq(SSL_get_SSL_CTX(serverssl), selected_ctx))
-            goto end;
-    }
+    if (!TEST_true(create_ssl_connection(serverssl, clientssl,
+            SSL_ERROR_NONE))
+        || !TEST_int_eq(data.calls, idx == 1 ? 2 : 1)
+        || !TEST_ptr(negotiated = SSL_get_current_cipher(serverssl))
+        || !TEST_ptr_eq(negotiated, expected))
+        goto end;
+    if ((idx == 1 || idx == 3)
+        && !TEST_ptr_eq(SSL_get_SSL_CTX(serverssl), selected_ctx))
+        goto end;
     ret = 1;
 end:
     SSL_free(serverssl);
@@ -1004,6 +997,58 @@ static int test_switched_context_supported_ciphers(void)
     ret = 1;
 end:
     sk_SSL_CIPHER_free(supported);
+    SSL_free(ssl);
+    SSL_CTX_free(initial);
+    SSL_CTX_free(alternate);
+    ERR_clear_error();
+    return ret;
+}
+
+/* The legacy setter and SSL_dup retain saved TLS 1.3 entries for both origins. */
+static int test_context_switch_saved_tls13_list(int idx)
+{
+    const char *saved_name = idx == 0 ? "TLS_AES_128_GCM_SHA256"
+                                      : TLS_TEST_SHA256_NAME;
+    const char *target_name = idx == 0 ? "TLS_AES_256_GCM_SHA384"
+                                       : TLS_TEST_SHA384_NAME;
+    SSL_CTX *initial = NULL, *alternate = NULL;
+    SSL *ssl = NULL, *duplicate = NULL;
+    SSL_CONNECTION *sc;
+    STACK_OF(SSL_CIPHER) *supported = NULL;
+    int ret = 0;
+
+    if (!TEST_ptr(initial = SSL_CTX_new_ex(libctx, NULL, TLS_method()))
+        || !TEST_ptr(alternate = SSL_CTX_new_ex(libctx, NULL, TLS_method()))
+        || !TEST_true(SSL_CTX_set_ciphersuites(initial, saved_name))
+        || !TEST_true(SSL_CTX_set_ciphersuites(alternate, target_name))
+        || !TEST_ptr(ssl = SSL_new(initial))
+        || !TEST_ptr(SSL_set_SSL_CTX(ssl, alternate))
+        || !TEST_ptr_eq(SSL_get_ciphers(ssl), SSL_CTX_get_ciphers(alternate))
+        || !TEST_true(SSL_set_cipher_list(ssl, "DEFAULT"))
+        || !TEST_str_eq(SSL_CIPHER_get_name(
+                            sk_SSL_CIPHER_value(SSL_get_ciphers(ssl), 0)),
+            saved_name)
+        || !TEST_ptr(duplicate = SSL_dup(ssl))
+        || !TEST_ptr_ne(duplicate, ssl)
+        || !TEST_ptr(sc = SSL_CONNECTION_FROM_SSL_ONLY(duplicate))
+        || !TEST_int_eq(sk_SSL_CIPHER_num(sc->tls13_ciphersuites), 1)
+        || !TEST_str_eq(SSL_CIPHER_get_name(
+                            sk_SSL_CIPHER_value(sc->tls13_ciphersuites, 0)),
+            saved_name)
+        || !TEST_true(SSL_set_ciphersuites(ssl, target_name))
+        || !TEST_str_eq(SSL_CIPHER_get_name(
+                            sk_SSL_CIPHER_value(SSL_get_ciphers(ssl), 0)),
+            target_name)
+        || !TEST_ptr(supported = SSL_get1_supported_ciphers(duplicate))
+        || !TEST_str_eq(SSL_CIPHER_get_name(
+                            sk_SSL_CIPHER_value(supported, 0)),
+            saved_name))
+        goto end;
+
+    ret = 1;
+end:
+    sk_SSL_CIPHER_free(supported);
+    SSL_free(duplicate);
     SSL_free(ssl);
     SSL_CTX_free(initial);
     SSL_CTX_free(alternate);
@@ -1687,6 +1732,7 @@ int setup_tests(void)
     ADD_TEST(test_provider_hrr);
     ADD_ALL_TESTS(test_sni_context_switch, 4);
     ADD_TEST(test_switched_context_supported_ciphers);
+    ADD_ALL_TESTS(test_context_switch_saved_tls13_list, 2);
     ADD_ALL_TESTS(test_sni_switch_cipher_list_policy, 2);
     ADD_TEST(test_post_handshake_context_switch);
     ADD_TEST(test_ssl_dup_canonicalisation);

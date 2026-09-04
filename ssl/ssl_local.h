@@ -1625,8 +1625,6 @@ struct ssl_connection_st {
     STACK_OF(SSL_CIPHER) *cipher_list_by_id;
     /* TLSv1.3 specific ciphersuites */
     STACK_OF(SSL_CIPHER) *tls13_ciphersuites;
-    /* SSL_set_ciphersuites() replaced the inherited TLSv1.3 policy. */
-    int tls13_ciphersuites_explicit;
     /*
      * These are the ones being used, the ones in SSL_SESSION are the ones to
      * be 'copied' into these ones
