@@ -5668,16 +5668,18 @@ SSL *SSL_dup(SSL *s)
      * per-connection stacks and canonicalise provider entries.
      */
     cipher_list = NULL;
-    if (sc->tls13_ciphersuites != NULL) {
+    if (sc->tls13_ciphersuites_explicit
+        && sc->tls13_ciphersuites != NULL) {
         cipher_list = sk_SSL_CIPHER_dup(sc->tls13_ciphersuites);
         if (cipher_list == NULL
             || !ssl_cipher_stack_canon(retsc, cipher_list)) {
             sk_SSL_CIPHER_free(cipher_list);
             goto err;
         }
+        sk_SSL_CIPHER_free(retsc->tls13_ciphersuites);
+        retsc->tls13_ciphersuites = cipher_list;
+        retsc->tls13_ciphersuites_explicit = 1;
     }
-    sk_SSL_CIPHER_free(retsc->tls13_ciphersuites);
-    retsc->tls13_ciphersuites = cipher_list;
 
     cipher_list = NULL;
     if (sc->cipher_list != NULL) {
