@@ -26,13 +26,13 @@ print(string.sub(hash, 0, 16))
 }
 
 %global _performance_build 1
-%global fork_commit 7d9c89d9fe4ee02f62f6d80df06fc031d352284d
-%global fork_shortcommit 7d9c89d
+%global fork_commit 9bbfc53b7af48db30db455ed10f20782470e03a7
+%global fork_shortcommit 9bbfc53
 
 Summary: Utilities from the general purpose cryptography library with TLS implementation
 Name: openssl
 Version: 4.1.0~dev.1
-Release: 0.3.git%{fork_shortcommit}%{?dist}
+Release: 0.4.git%{fork_shortcommit}%{?dist}
 Epoch: 1
 Source0: openssl-%{version}.tar.gz
 Source4: openssl.rpmlintrc
@@ -378,6 +378,9 @@ ln -s /etc/crypto-policies/back-ends/openssl_fips.config $RPM_BUILD_ROOT%{_sysco
 %ldconfig_scriptlets libs
 
 %changelog
+* Fri Sep 04 2026 Martin Wolf <mwolf@adiumentum.com> - 1:4.1.0~dev.1-0.4.git9bbfc53
+- Enforce inherited provider ciphersuite policy after SNI
+
 * Wed Sep 02 2026 Martin Wolf <mwolf@adiumentum.com> - 1:4.1.0~dev.1-0.3.git7d9c89d
 - Compile the provider kTLS regression with Fedora's kTLS configuration
 
