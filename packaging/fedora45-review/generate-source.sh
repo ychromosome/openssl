@@ -1,8 +1,8 @@
 #!/bin/sh
 set -eu
 
-commit=7d9c89d9fe4ee02f62f6d80df06fc031d352284d
-expected=f22fef688323db38bc73ea2ea84ce4bbd4646573af05b29d7587718ed4fe810b
+commit=9bbfc53b7af48db30db455ed10f20782470e03a7
+expected=825f72b650f829fa2184f80ef50a48f17da910290c1f52ff265257bbef8f377f
 repository=${1:-$(git rev-parse --show-toplevel)}
 output=${2:-SOURCES/openssl-4.1.0~dev.1.tar.gz}
 
