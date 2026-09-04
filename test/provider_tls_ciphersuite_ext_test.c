@@ -916,7 +916,7 @@ static int test_d2i_provider_rollback_mfail(void)
     const SSL_CIPHER *provider_cipher = NULL;
     unsigned char *der = NULL;
     const unsigned char *p;
-    int derlen, ret = 0;
+    int derlen, ret = -1;
 
     if (!make_pair(BUILTIN_SHA256_NAME, BUILTIN_SHA256_NAME, cert,
             privkey, &sctx, &cctx)
