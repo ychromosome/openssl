@@ -646,10 +646,12 @@ ciphersuites.
 
 Provider-defined ciphersuites are not added to the default ciphersuite list and
 must be selected by name. Their code points require deployment coordination.
-SSL_set_SSL_CTX() keeps its existing behavior; provider descriptors continue
-to resolve through the connection's original SSL_CTX. Switching to a context
-with a different library context or property query is outside this capability's
-contract.
+SSL_set_SSL_CTX() keeps its existing behavior: an SSL object without its own
+cipher list follows the cipher list of its current SSL_CTX, while a list set
+with SSL_set_cipher_list() or SSL_set_ciphersuites() persists across the
+switch. Provider descriptors continue to resolve through the connection's
+original SSL_CTX. Switching to a context with a different library context or
+property query is outside this capability's contract.
 They are restricted to TLS 1.3 and are not available for DTLS or QUIC.
 DTLS 1.3 record-number encryption and QUIC header protection require a
 companion algorithm that this capability does not declare.
