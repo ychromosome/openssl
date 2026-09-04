@@ -32,6 +32,13 @@ OpenSSL 4.1
 
 ### Changes between 4.0 and 4.1 [xx XXX xxxx]
 
+ * Fixed allocation-failure handling in `SSL_CTX_set_ciphersuites()` and
+   `SSL_set_ciphersuites()`. If inserting a requested ciphersuite into the
+   active list fails, the setter now reports failure and preserves the
+   previous cipher lists instead of accepting an incomplete selection.
+
+   *Martin Wolf*
+
  * Refactored remaining cipher `OSSL_PARAM` name parsing so that
    automatically generated parsers are used instead of
    `OSSL_PARAM_locate()` calls.  This should ensure that the list
@@ -113,6 +120,22 @@ OpenSSL 4.1
    and streams in the hierarchy.
 
    *Mounir IDRASSI*
+
+ * Added provider-defined TLS 1.3 ciphersuites through the
+   `TLS-CIPHERSUITE` capability. Descriptors name an AEAD and transcript digest
+   fetched with the SSL_CTX library context and property query. Provider suites
+   require explicit selection. Sessions that have held one cannot be resumed,
+   cached, serialised or ticketed:
+   SSL_SESSION_is_resumable() returns 0, and SSL_CTX_add_session(),
+   SSL_set_session(), i2d_SSL_SESSION() and SSL_new_session_ticket() fail.
+   SSL_SESSION_set_cipher() rejects provider-defined ciphersuites.
+   External-PSK callbacks reject such sessions; provider-backed external PSK
+   and 0-RTT are not supported. Provider AEADs must enforce their own per-key
+   record limits. Provider suites do not use kTLS. Each SSL_CTX accepts at most
+   128 provider suites;
+   duplicate provider wire IDs in a peer list are discarded before selection.
+
+   *Martin Wolf*
 
  * Fixed TLS 1.3 clients to encrypt 0-RTT early data with the first offered
    PSK identity (RFC 9846 section 4.3.10) when a 0-RTT-capable resumption

@@ -3405,6 +3405,10 @@ int ssl_cipher_disabled(const SSL_CONNECTION *s, const SSL_CIPHER *c,
     if (s->s3.tmp.max_ver == 0)
         return 1;
 
+    if (SSL_IS_QUIC_HANDSHAKE(s)
+        && c->origin == SSL_CIPHER_ORIGIN_PROVIDER)
+        return 1;
+
     if (SSL_IS_QUIC_INT_HANDSHAKE(s))
         /* For QUIC, only allow these ciphersuites. */
         switch (SSL_CIPHER_get_id(c)) {

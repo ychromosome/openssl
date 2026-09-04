@@ -616,6 +616,8 @@ struct ssl_session_st {
      * mirroring not_resumable just above, for the same reason.
      */
     int psk_external;
+    /* Sticky provider provenance; copied by dup and not encoded in ASN.1. */
+    int provider_cipher_seen;
     /* Peer raw public key, if available */
     EVP_PKEY *peer_rpk;
     /* This is the cert and type for the other end. */
@@ -2879,8 +2881,17 @@ __owur int ssl_get_prev_session(SSL_CONNECTION *s, CLIENTHELLO_MSG *hello);
 __owur SSL_SESSION *ssl_session_dup(const SSL_SESSION *src, int ticket);
 __owur int ssl_session_set_cipher(SSL_SESSION *session,
     const SSL_CIPHER *cipher);
+__owur int ssl_session_is_external_psk_admissible(const SSL_SESSION *session);
 __owur int ssl_cipher_up_ref(const SSL_CIPHER *cipher);
 void ssl_cipher_free(const SSL_CIPHER *cipher);
+__owur const SSL_CIPHER *ssl_cipher_canon(const SSL_CONNECTION *s,
+    const SSL_CIPHER *cipher);
+__owur const SSL_CIPHER *ssl_cipher_canon_enabled(const SSL_CONNECTION *s,
+    const SSL_CIPHER *cipher);
+int ssl_cipher_stack_find(STACK_OF(SSL_CIPHER) *sk,
+    const SSL_CIPHER *cipher);
+__owur int ssl_cipher_stack_canon(const SSL_CONNECTION *s,
+    STACK_OF(SSL_CIPHER) *sk);
 __owur int ssl_cipher_id_cmp(const SSL_CIPHER *a, const SSL_CIPHER *b);
 DECLARE_OBJ_BSEARCH_GLOBAL_CMP_FN(SSL_CIPHER, SSL_CIPHER, ssl_cipher_id);
 __owur int ssl_cipher_ptr_id_cmp(const SSL_CIPHER *const *ap,
@@ -2901,6 +2912,10 @@ __owur int ssl_cipher_get_evp_cipher(SSL_CTX *ctx, const SSL_CIPHER *sslc,
     const EVP_CIPHER **enc);
 __owur int ssl_cipher_get_evp_cipher_sn(SSL_CTX *ctx, const SSL_CIPHER *sslc,
     const EVP_CIPHER **enc);
+__owur const EVP_MD *ssl_cipher_get_evp_md(SSL_CTX *ctx,
+    const SSL_CIPHER *sslc);
+__owur int ssl_cipher_has_same_digest(const SSL_CIPHER *a,
+    const SSL_CIPHER *b);
 __owur int ssl_cipher_get_evp_md_mac(SSL_CTX *ctx, const SSL_CIPHER *sslc,
     const EVP_MD **md,
     int *mac_pkey_type, size_t *mac_secret_size);

@@ -4981,24 +4981,29 @@ const SSL_CIPHER *ssl3_choose_cipher(SSL_CONNECTION *s, STACK_OF(SSL_CIPHER) *cl
             if (!ok)
                 continue;
         }
-        ii = sk_SSL_CIPHER_find(allow, c);
+        ii = ssl_cipher_stack_find(allow, c);
         if (ii >= 0) {
+            const SSL_CIPHER *canonical = ssl_cipher_canon_enabled(s, c);
+
+            if (canonical == NULL)
+                continue;
             /* Check security callback permits this cipher */
             if (!ssl_security(s, SSL_SECOP_CIPHER_SHARED,
-                    c->strength_bits, 0, (void *)c))
+                    canonical->strength_bits, 0, (void *)canonical))
                 continue;
 
             if ((alg_k & SSL_kECDHE) && (alg_a & SSL_aECDSA)
                 && s->s3.is_probably_safari) {
                 if (!ret)
-                    ret = sk_SSL_CIPHER_value(allow, ii);
+                    ret = canonical;
                 continue;
             }
 
             if (prefer_sha256) {
-                const SSL_CIPHER *tmp = sk_SSL_CIPHER_value(allow, ii);
-                const EVP_MD *md = ssl_md(SSL_CONNECTION_GET_CTX(s),
-                    tmp->algorithm2);
+                const SSL_CIPHER *tmp = canonical;
+                const EVP_MD *md;
+
+                md = ssl_cipher_get_evp_md(SSL_CONNECTION_GET_CTX(s), tmp);
 
                 if (md != NULL
                     && EVP_MD_is_a(md, OSSL_DIGEST_NAME_SHA2_256)) {
@@ -5009,7 +5014,7 @@ const SSL_CIPHER *ssl3_choose_cipher(SSL_CONNECTION *s, STACK_OF(SSL_CIPHER) *cl
                     ret = tmp;
                 continue;
             }
-            ret = sk_SSL_CIPHER_value(allow, ii);
+            ret = canonical;
             break;
         }
     }
