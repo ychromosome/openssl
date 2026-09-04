@@ -89,12 +89,11 @@ The capability does not supply a standard name, so
 
 Wire IDs resolve through the connection's original `session_ctx`.
 `SSL_set_SSL_CTX()` keeps its existing behavior: it does not replace that
-registry. An SSL without a per-connection TLS 1.3 ciphersuite setting follows
-the TLS 1.3 list of its current `SSL_CTX`; a successful
-`SSL_set_ciphersuites()` makes that list explicit and persistent. The
-pre-TLS-1.3 list follows the current context unless set with
-`SSL_set_cipher_list()`. Switching to a context with a different library
-context or property query is outside this version's contract.
+registry or the connection's saved TLS 1.3 list. The interaction of the two
+per-SSL list setters is documented in [provider-base(7)](../man7/provider-base.pod).
+This capability adds no provider-specific context-switch policy.
+Switching to a context with a different library context or property query is
+outside this version's contract.
 
 Ownership and sessions
 ----------------------
@@ -103,9 +102,8 @@ The context registry owns each descriptor. A descriptor retains its AEAD and
 digest. `SSL_SESSION` holds a counted descriptor reference. Per-connection
 cipher stacks created by `SSL_set_cipher_list()` or
 `SSL_set_ciphersuites()` are shallow copies whose provider elements are
-canonicalised to, and owned by, the connection's `session_ctx`. An inherited
-TLS 1.3 policy is checked against the current `SSL_CTX`. As upstream, a stack
-returned by `SSL_get_ciphers()` for an SSL without its own pre-TLS-1.3 list is
+canonicalised to, and owned by, the connection's `session_ctx`. As upstream,
+a stack returned by `SSL_get_ciphers()` for an SSL without its own stack is
 owned by the current `SSL_CTX`.
 
 Once a session has held a provider suite, it cannot be resumed, cached,

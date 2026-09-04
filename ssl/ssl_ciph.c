@@ -210,16 +210,11 @@ const SSL_CIPHER *ssl_cipher_canon_enabled(const SSL_CONNECTION *s,
     const SSL_CIPHER *cipher)
 {
     const SSL_CIPHER *canonical = ssl_cipher_canon(s, cipher);
-    STACK_OF(SSL_CIPHER) *enabled;
-    SSL_CTX *ctx;
 
     if (canonical == NULL || canonical->origin != SSL_CIPHER_ORIGIN_PROVIDER)
         return canonical;
-    ctx = SSL_CONNECTION_GET_CTX(s);
-    enabled = s->tls13_ciphersuites;
-    if (!s->tls13_ciphersuites_explicit && ctx != NULL)
-        enabled = ctx->tls13_ciphersuites;
-    if (enabled == NULL || ssl_cipher_stack_find(enabled, canonical) < 0)
+    if (s->tls13_ciphersuites == NULL
+        || ssl_cipher_stack_find(s->tls13_ciphersuites, canonical) < 0)
         return NULL;
     return canonical;
 }
@@ -1647,7 +1642,6 @@ int SSL_set_ciphersuites(SSL *s, const char *str)
 
     sk_SSL_CIPHER_free(sc->tls13_ciphersuites);
     sc->tls13_ciphersuites = newciphers;
-    sc->tls13_ciphersuites_explicit = 1;
     return 1;
 }
 
