@@ -332,11 +332,45 @@ static void count_server_hellos_cb(int write_p, int version, int content_type,
         (*count)++;
 }
 
+static int expect_no_shared_cipher(SSL *serverssl, SSL *clientssl)
+{
+    unsigned long error;
+    int i, client_error, client_rc, server_rc = 1;
+
+    ERR_clear_error();
+    for (i = 0; i < 4; i++) {
+        client_rc = SSL_connect(clientssl);
+        if (client_rc <= 0) {
+            client_error = SSL_get_error(clientssl, client_rc);
+            if (client_error != SSL_ERROR_WANT_READ
+                && client_error != SSL_ERROR_WANT_WRITE
+                && client_error != SSL_ERROR_SSL)
+                return 0;
+        }
+        server_rc = SSL_accept(serverssl);
+        if (server_rc <= 0
+            && SSL_get_error(serverssl, server_rc) == SSL_ERROR_SSL)
+            break;
+    }
+    if (!TEST_int_le(server_rc, 0))
+        return 0;
+    do {
+        error = ERR_get_error();
+        if (error == 0) {
+            TEST_error("no shared cipher error not found");
+            return 0;
+        }
+    } while (ERR_GET_LIB(error) != ERR_LIB_SSL
+        || ERR_GET_REASON(error) != SSL_R_NO_SHARED_CIPHER);
+    return 1;
+}
+
 typedef struct {
     SSL_CTX *first;
     SSL_CTX *second;
     int set_ciphersuites;
     int set_cipher_list;
+    int keep_contexts;
     int calls;
 } SNI_SWITCH_DATA;
 
@@ -351,18 +385,18 @@ static int sni_switch_cb(SSL *ssl, int *alert, void *arg)
         || (data->set_cipher_list
             && !SSL_set_cipher_list(ssl, "DEFAULT"))
         || (data->second != NULL
-            && SSL_set_SSL_CTX(ssl, data->second) == NULL)
-        || (data->set_ciphersuites && data->second != NULL
-            && !SSL_set_ciphersuites(ssl, TLS_TEST_SHA256_NAME))) {
+            && SSL_set_SSL_CTX(ssl, data->second) == NULL)) {
         *alert = SSL_AD_INTERNAL_ERROR;
         return SSL_TLSEXT_ERR_ALERT_FATAL;
     }
 
-    SSL_CTX_free(data->first);
-    data->first = NULL;
-    if (data->second != NULL) {
-        SSL_CTX_free(data->second);
-        data->second = NULL;
+    if (!data->keep_contexts) {
+        SSL_CTX_free(data->first);
+        data->first = NULL;
+        if (data->second != NULL) {
+            SSL_CTX_free(data->second);
+            data->second = NULL;
+        }
     }
     return SSL_TLSEXT_ERR_OK;
 }
@@ -776,14 +810,14 @@ end:
  * idx 1: HRR; the selected context enables the provider suite at context
  *        level and nothing is set on the SSL.
  * idx 2: the callback sets per-SSL ciphersuites and switches twice.
- * idx 3: the selected context does not enable the provider suite. TLS 1.3
- *        selects the ciphersuite before the servername callback runs, so the
- *        canonical descriptor stays negotiated.
+ * idx 3: the selected context does not enable the provider suite; the final
+ *        servername check rejects the handshake.
  * The callback releases the contexts it switched to; the SSL keeps them alive.
  */
 static int test_sni_context_switch(int idx)
 {
     SSL_CTX *sctx = NULL, *cctx = NULL;
+    SSL_CTX *selected_ctx = NULL;
     SSL *serverssl = NULL, *clientssl = NULL;
     const SSL_CIPHER *expected = NULL, *negotiated;
     SNI_SWITCH_DATA data = { 0 };
@@ -805,6 +839,9 @@ static int test_sni_context_switch(int idx)
         goto end;
 
     if (idx == 0 || idx == 2) {
+        const char *target_suites = idx == 2
+            ? "TLS_AES_256_GCM_SHA384" : TLS_TEST_SHA256_NAME;
+
         data.set_ciphersuites = 1;
         data.set_cipher_list = idx == 0;
         if (!TEST_true(create_ssl_ctx_pair(libctx, TLS_server_method(), NULL,
@@ -813,12 +850,13 @@ static int test_sni_context_switch(int idx)
             || !TEST_true(create_ssl_ctx_pair(libctx, TLS_server_method(), NULL,
                 TLS1_3_VERSION, TLS1_3_VERSION, &data.second, NULL,
                 cert, privkey))
-            || !TEST_true(SSL_CTX_set_ciphersuites(data.first,
-                TLS_TEST_SHA256_NAME))
-            || !TEST_true(SSL_CTX_set_ciphersuites(data.second,
-                TLS_TEST_SHA256_NAME)))
+            || !TEST_true(SSL_CTX_set_ciphersuites(
+                data.first, target_suites))
+            || !TEST_true(SSL_CTX_set_ciphersuites(
+                data.second, target_suites)))
             goto end;
     } else if (idx == 1) {
+        data.keep_contexts = 1;
         if (!TEST_true(create_ssl_ctx_pair(libctx, TLS_server_method(), NULL,
                 TLS1_3_VERSION, TLS1_3_VERSION, &data.first, NULL,
                 cert, privkey))
@@ -838,16 +876,14 @@ static int test_sni_context_switch(int idx)
             goto end;
 #endif
     } else {
-        if (!TEST_ptr(data.first = SSL_CTX_new_ex(libctx, "provider=default",
-                          TLS_server_method()))
-            || !TEST_true(create_ssl_ctx_pair(libctx, TLS_server_method(), NULL,
+        if (!TEST_true(create_ssl_ctx_pair(libctx, TLS_server_method(), NULL,
                 TLS1_3_VERSION, TLS1_3_VERSION, &data.first, NULL,
                 cert, privkey))
-            || !TEST_int_eq(sk_SSL_CIPHER_num(
-                                data.first->provider_ciphersuites),
-                0))
+            || !TEST_true(SSL_CTX_set_ciphersuites(
+                data.first, "TLS_AES_256_GCM_SHA384")))
             goto end;
     }
+    selected_ctx = data.first;
 
     if (!TEST_true(SSL_CTX_set_tlsext_servername_callback(sctx,
             sni_switch_cb))
@@ -863,12 +899,22 @@ static int test_sni_context_switch(int idx)
     SSL_CTX_free(cctx);
     cctx = NULL;
 
-    if (!TEST_true(create_ssl_connection(serverssl, clientssl,
-            SSL_ERROR_NONE))
-        || !TEST_int_eq(data.calls, idx == 1 ? 2 : 1)
-        || !TEST_ptr(negotiated = SSL_get_current_cipher(serverssl))
-        || !TEST_ptr_eq(negotiated, expected))
-        goto end;
+    if (idx == 3) {
+        if (!TEST_true(expect_no_shared_cipher(serverssl, clientssl))
+            || !TEST_int_eq(data.calls, 1)
+            || !TEST_ptr_eq(SSL_get_SSL_CTX(serverssl), selected_ctx))
+            goto end;
+    } else {
+        if (!TEST_true(create_ssl_connection(serverssl, clientssl,
+                SSL_ERROR_NONE))
+            || !TEST_int_eq(data.calls, idx == 1 ? 2 : 1)
+            || !TEST_ptr(negotiated = SSL_get_current_cipher(serverssl))
+            || !TEST_ptr_eq(negotiated, expected))
+            goto end;
+        if (idx == 1
+            && !TEST_ptr_eq(SSL_get_SSL_CTX(serverssl), selected_ctx))
+            goto end;
+    }
     ret = 1;
 end:
     SSL_free(serverssl);
@@ -991,8 +1037,7 @@ static int test_sni_switch_cipher_list_policy(int idx)
     const SSL_CIPHER *negotiated;
     const char *policy = idx == 0 ? "ALL:@SECLEVEL=0"
                                   : "AES256-SHA:@SECLEVEL=0";
-    unsigned long error;
-    int i, rc = 1, ret = 0;
+    int ret = 0;
 
     if (!TEST_true(create_ssl_ctx_pair(libctx, TLS_server_method(),
             TLS_client_method(), TLS1_2_VERSION, TLS1_2_VERSION,
@@ -1021,27 +1066,11 @@ static int test_sni_switch_cipher_list_policy(int idx)
             || !TEST_str_eq(SSL_CIPHER_get_name(negotiated), "AES128-SHA"))
             goto end;
     } else {
-        /* Drive the handshake by hand to observe the server's failure. */
-        ERR_clear_error();
-        for (i = 0; i < 4; i++) {
-            (void)SSL_connect(clientssl);
-            rc = SSL_accept(serverssl);
-            if (rc <= 0 && SSL_get_error(serverssl, rc) == SSL_ERROR_SSL)
-                break;
-        }
-        if (!TEST_int_le(rc, 0)
+        if (!TEST_true(expect_no_shared_cipher(serverssl, clientssl))
             || !TEST_ptr_eq(SSL_get_SSL_CTX(serverssl), target)
             || !TEST_ptr_eq(SSL_get_ciphers(serverssl),
                 SSL_CTX_get_ciphers(target)))
             goto end;
-        do {
-            error = ERR_get_error();
-            if (error == 0) {
-                TEST_error("no shared cipher error not found");
-                goto end;
-            }
-        } while (ERR_GET_LIB(error) != ERR_LIB_SSL
-            || ERR_GET_REASON(error) != SSL_R_NO_SHARED_CIPHER);
     }
 
     ret = 1;
