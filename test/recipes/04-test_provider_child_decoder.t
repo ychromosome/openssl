@@ -15,6 +15,8 @@ use OpenSSL::Test::Utils;
 setup("test_provider_child_decoder");
 
 plan skip_all => "module support is disabled" if disabled("module");
+plan skip_all => "TLS 1.3 support is disabled"
+    if disabled("tls") || disabled("tls1_3");
 
 $ENV{OPENSSL_MODULES} = bldtop_dir("test");
 $ENV{OPENSSL_CONF} = data_file("openssl.cnf");
