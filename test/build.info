@@ -1368,6 +1368,13 @@ IF[{- !$disabled{tests} -}]
       GENERATE[fake-cipher.ld]=../util/providers.num
     ENDIF
     IF[{- !$disabled{tls} && !$disabled{tls1_3} -}]
+      MODULES{noinst}=tls-provider
+      SOURCE[tls-provider]=tls-provider-module.c tls-provider.c
+      INCLUDE[tls-provider]=.. ../include ../apps/include
+      DEPEND[tls-provider]=../libcrypto
+      IF[{- defined $target{shared_defflag} -}]
+        SOURCE[tls-provider]=p_test.ld
+      ENDIF
       MODULES{noinst}=tls-provider-child
       SOURCE[tls-provider-child]=tls-provider-module.c tls-provider.c
       INCLUDE[tls-provider-child]=.. ../include ../apps/include
