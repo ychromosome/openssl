@@ -717,7 +717,7 @@ static int test_ssl_ciphersuites_mfail(void)
     SSL *ssl = NULL;
     SSL_CONNECTION *sc;
     STACK_OF(SSL_CIPHER) *old_tls, *old_list, *old_by_id;
-    int set_ok, ret = 0;
+    int set_ok, ret = -1;
 
     if (!TEST_ptr(ctx = SSL_CTX_new_ex(libctx, NULL, TLS_method()))
         || !TEST_ptr(ssl = SSL_new(ctx))
