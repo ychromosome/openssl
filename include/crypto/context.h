@@ -33,6 +33,7 @@ void *ossl_threads_ctx_new(OSSL_LIB_CTX *);
 #endif
 
 void ossl_provider_store_free(void *);
+void ossl_provider_store_free_child_owners(void *);
 void ossl_property_string_data_free(void *);
 void ossl_stored_namemap_free(void *);
 void ossl_property_defns_free(void *);
