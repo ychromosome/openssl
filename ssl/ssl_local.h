@@ -1282,6 +1282,9 @@ struct ssl_ctx_st {
     size_t group_list_len;
     size_t group_list_max_len;
 
+    STACK_OF(SSL_CIPHER) *provider_ciphersuites;
+    STACK_OF(SSL_CIPHER) *provider_ciphersuites_by_name;
+
     TLS_SIGALG_INFO *sigalg_list;
     size_t sigalg_list_len;
     size_t sigalg_list_max_len;
@@ -2962,7 +2965,12 @@ static ossl_inline int ossl_is_grease_value(uint16_t val)
 }
 __owur int ssl_setup_sigalgs(SSL_CTX *ctx);
 int ssl_load_groups(SSL_CTX *ctx);
+int ssl_load_provider_ciphersuites(SSL_CTX *ctx);
 int ssl_load_sigalgs(SSL_CTX *ctx);
+__owur const SSL_CIPHER *ssl_provider_ciphersuite_by_id(const SSL_CTX *ctx,
+    uint32_t id);
+__owur const SSL_CIPHER *ssl_provider_ciphersuite_by_name(const SSL_CTX *ctx,
+    const char *name);
 __owur int ssl_fill_hello_random(SSL_CONNECTION *s, int server,
     unsigned char *field, size_t len,
     DOWNGRADE dgrd);
@@ -2987,6 +2995,7 @@ __owur unsigned int ssl_get_max_send_fragment(const SSL_CONNECTION *sc);
 __owur unsigned int ssl_get_split_send_fragment(const SSL_CONNECTION *sc);
 
 __owur const SSL_CIPHER *ssl3_get_cipher_by_id(uint32_t id);
+__owur int ssl3_has_cipher_name(const char *name);
 __owur const SSL_CIPHER *ssl3_get_cipher_by_std_name(const char *stdname);
 __owur const SSL_CIPHER *ssl3_get_tls13_cipher_by_std_name(const char *stdname);
 __owur const SSL_CIPHER *ssl3_get_cipher_by_char(const unsigned char *p);
