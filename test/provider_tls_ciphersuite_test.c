@@ -711,7 +711,7 @@ static int test_provider_discovery_mfail(void)
     return ret;
 }
 
-static int test_ssl_ciphersuites_mfail(void)
+static int test_ssl_ciphersuites_mfail(int idx)
 {
     SSL_CTX *ctx = NULL;
     SSL *ssl = NULL;
@@ -721,9 +721,12 @@ static int test_ssl_ciphersuites_mfail(void)
 
     if (!TEST_ptr(ctx = SSL_CTX_new_ex(libctx, NULL, TLS_method()))
         || !TEST_ptr(ssl = SSL_new(ctx))
-        || !TEST_ptr(sc = SSL_CONNECTION_FROM_SSL_ONLY(ssl))
-        || !TEST_true(SSL_set_ciphersuites(ssl,
-            "TLS_AES_128_GCM_SHA256")))
+        || !TEST_ptr(sc = SSL_CONNECTION_FROM_SSL_ONLY(ssl)))
+        goto end;
+
+    /* Cover an already-owned list and the inherited-list allocation path. */
+    if (idx == 0
+        && !TEST_true(SSL_set_ciphersuites(ssl, "TLS_AES_128_GCM_SHA256")))
         goto end;
 
     old_tls = sc->tls13_ciphersuites;
@@ -1772,7 +1775,7 @@ int setup_tests(void)
     ADD_TEST(test_property_query_exclusion);
     ADD_TEST(test_provider_composition);
     ADD_MFAIL_SAMPLED_NO_CHECK_TEST(test_provider_discovery_mfail, 64);
-    ADD_MFAIL_SAMPLED_NO_CHECK_TEST(test_ssl_ciphersuites_mfail, 64);
+    ADD_MFAIL_SAMPLED_ALL_NO_CHECK_TESTS(test_ssl_ciphersuites_mfail, 2, 64);
     ADD_TEST(test_provider_hrr);
     ADD_ALL_TESTS(test_sni_context_switch, 4);
     ADD_TEST(test_switched_context_supported_ciphers);

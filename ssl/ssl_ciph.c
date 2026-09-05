@@ -1615,28 +1615,27 @@ int SSL_set_ciphersuites(SSL *s, const char *str)
         if ((cipher_list = SSL_get_ciphers(s)) == NULL
             || (inherited = sk_SSL_CIPHER_dup(cipher_list)) == NULL) {
             ERR_raise(ERR_LIB_SSL, ERR_R_CRYPTO_LIB);
-            sk_SSL_CIPHER_free(newciphers);
-            return 0;
+            goto err;
         }
         if (!ssl_cipher_stack_canon(sc, inherited)) {
             ERR_raise(ERR_LIB_SSL, SSL_R_INVALID_CONTEXT);
-            sk_SSL_CIPHER_free(inherited);
-            sk_SSL_CIPHER_free(newciphers);
-            return 0;
+            goto err;
         }
         cipher_list = inherited;
     }
     if (!update_cipher_list(s->ctx, &cipher_list, &sc->cipher_list_by_id,
-            newciphers)) {
-        sk_SSL_CIPHER_free(inherited);
-        sk_SSL_CIPHER_free(newciphers);
-        return 0;
-    }
+            newciphers))
+        goto err;
     sc->cipher_list = cipher_list;
 
     sk_SSL_CIPHER_free(sc->tls13_ciphersuites);
     sc->tls13_ciphersuites = newciphers;
     return 1;
+
+err:
+    sk_SSL_CIPHER_free(inherited);
+    sk_SSL_CIPHER_free(newciphers);
+    return 0;
 }
 
 STACK_OF(SSL_CIPHER) *ssl_create_cipher_list(SSL_CTX *ctx,
