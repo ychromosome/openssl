@@ -1238,7 +1238,7 @@ static int tls_prov_get_ciphersuites(PROV_XOR_CTX *pctx,
             : TLS_TEST_MANY_COUNT;
 
         for (i = 0; i < count; i++) {
-            snprintf(many_name, sizeof(many_name),
+            BIO_snprintf(many_name, sizeof(many_name),
                 "TLS_TEST_PROVIDER_INDEX_%03d", i);
             many_codepoint = 0xff00U + TLS_TEST_MANY_COUNT - 1U
                 - (unsigned int)i;
