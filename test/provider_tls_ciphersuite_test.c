@@ -1649,6 +1649,7 @@ static int test_provider_ciphersuite_disables_ktls(void)
         || !TEST_true(SSL_write_ex(clientssl, message, sizeof(message),
             &written))
         || !TEST_size_t_eq(written, sizeof(message))
+        || !TEST_true(wait_until_sock_readable(sfd))
         || !TEST_true(SSL_read_ex(serverssl, received, sizeof(received),
             &readbytes))
         || !TEST_mem_eq(received, readbytes, message, sizeof(message)))
