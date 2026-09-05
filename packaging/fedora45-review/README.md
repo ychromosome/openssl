@@ -1,4 +1,5 @@
-# Fedora 45 review RPM
+Fedora 45 review RPM
+===================
 
 This packaging pins OpenSSL commit
 `9bbfc53b7af48db30db455ed10f20782470e03a7` and Fedora 45 dist-git commit
