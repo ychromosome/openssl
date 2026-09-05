@@ -32,6 +32,13 @@ OpenSSL 4.1
 
 ### Changes between 4.0 and 4.1 [xx XXX xxxx]
 
+ * Fixed allocation-failure handling in `SSL_CTX_set_ciphersuites()` and
+   `SSL_set_ciphersuites()`. If inserting a requested ciphersuite into the
+   active list fails, the setter now reports failure and preserves the
+   previous cipher lists instead of accepting an incomplete selection.
+
+   *Martin Wolf*
+
  * Refactored remaining cipher `OSSL_PARAM` name parsing so that
    automatically generated parsers are used instead of
    `OSSL_PARAM_locate()` calls.  This should ensure that the list

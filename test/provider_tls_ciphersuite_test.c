@@ -713,46 +713,121 @@ static int test_provider_discovery_mfail(void)
     return ret;
 }
 
+static int cipher_stacks_equal(const STACK_OF(SSL_CIPHER) *actual,
+    const STACK_OF(SSL_CIPHER) *expected)
+{
+    int i;
+
+    if (!TEST_int_eq(sk_SSL_CIPHER_num(actual), sk_SSL_CIPHER_num(expected)))
+        return 0;
+    for (i = 0; i < sk_SSL_CIPHER_num(expected); i++)
+        if (!TEST_ptr_eq(sk_SSL_CIPHER_value(actual, i),
+                sk_SSL_CIPHER_value(expected, i)))
+            return 0;
+    return 1;
+}
+
 static int test_ssl_ciphersuites_mfail(int idx)
 {
     SSL_CTX *ctx = NULL;
     SSL *ssl = NULL;
     SSL_CONNECTION *sc;
-    STACK_OF(SSL_CIPHER) *old_tls, *old_list, *old_by_id;
-    int set_ok, ret = -1;
+    STACK_OF(SSL_CIPHER) **stacks[3], *old[3], *saved[3] = { NULL };
+    STACK_OF(SSL_CIPHER) *context_list = NULL, *context_by_id = NULL;
+    STACK_OF(SSL_CIPHER) *active, *by_id;
+    const SSL_CIPHER *cipher;
+    int i, j, pos, set_ok, role = idx % 3, ret = -1;
 
-    if (!TEST_ptr(ctx = SSL_CTX_new_ex(libctx, NULL, TLS_method()))
-        || !TEST_ptr(ssl = SSL_new(ctx))
+    if (!TEST_ptr(ctx = SSL_CTX_new_ex(libctx, NULL, TLS_method())))
+        goto end;
+
+    /* An empty combined list forces the first insertion to allocate. */
+    if (idx >= 3) {
+        if (!TEST_true(SSL_CTX_set_ciphersuites(ctx, ""))
+            || !TEST_int_eq(SSL_CTX_set_cipher_list(ctx, ""),
+                ctx->method->num_ciphers() == 0)
+            || !TEST_int_eq(sk_SSL_CIPHER_num(ctx->cipher_list), 0)
+            || !TEST_int_eq(sk_SSL_CIPHER_num(ctx->cipher_list_by_id), 0))
+            goto end;
+        ERR_clear_error();
+    }
+    if (!TEST_ptr(ssl = SSL_new(ctx))
         || !TEST_ptr(sc = SSL_CONNECTION_FROM_SSL_ONLY(ssl)))
         goto end;
 
-    /* Cover an already-owned list and the inherited-list allocation path. */
-    if (idx == 0
-        && !TEST_true(SSL_set_ciphersuites(ssl, "TLS_AES_128_GCM_SHA256")))
+    /* Cover an owned SSL list, an inherited SSL list, and the context. */
+    if (role == 0
+        && !TEST_true(SSL_set_ciphersuites(ssl,
+            idx >= 3 ? "" : "TLS_AES_128_GCM_SHA256")))
         goto end;
 
-    old_tls = sc->tls13_ciphersuites;
-    old_list = sc->cipher_list;
-    old_by_id = sc->cipher_list_by_id;
+    stacks[0] = role == 2 ? &ctx->tls13_ciphersuites : &sc->tls13_ciphersuites;
+    stacks[1] = role == 2 ? &ctx->cipher_list : &sc->cipher_list;
+    stacks[2] = role == 2 ? &ctx->cipher_list_by_id : &sc->cipher_list_by_id;
+    for (i = 0; i < 3; i++) {
+        old[i] = *stacks[i];
+        if (old[i] != NULL && !TEST_ptr(saved[i] = sk_SSL_CIPHER_dup(old[i])))
+            goto end;
+    }
+    if (!TEST_ptr(context_list = sk_SSL_CIPHER_dup(ctx->cipher_list))
+        || !TEST_ptr(context_by_id = sk_SSL_CIPHER_dup(ctx->cipher_list_by_id)))
+        goto end;
+
     MFAIL_start();
-    set_ok = SSL_set_ciphersuites(ssl, TLS_TEST_SHA256_NAME);
+    set_ok = role == 2
+        ? SSL_CTX_set_ciphersuites(ctx, TLS_TEST_SHA384_NAME ":" TLS_TEST_SHA256_NAME)
+        : SSL_set_ciphersuites(ssl, TLS_TEST_SHA384_NAME ":" TLS_TEST_SHA256_NAME);
     MFAIL_end();
 
     if (set_ok) {
-        if (!TEST_int_eq(sk_SSL_CIPHER_num(sc->tls13_ciphersuites), 1)
-            || !TEST_int_eq(sk_SSL_CIPHER_value(
-                                sc->tls13_ciphersuites, 0)
-                                ->origin,
-                SSL_CIPHER_ORIGIN_PROVIDER))
+        active = *stacks[1];
+        by_id = *stacks[2];
+        if (!TEST_int_eq(sk_SSL_CIPHER_num(*stacks[0]), 2)
+            || !TEST_int_ge(sk_SSL_CIPHER_num(active), 2)
+            || !TEST_int_eq(sk_SSL_CIPHER_num(active), sk_SSL_CIPHER_num(by_id))
+            || !TEST_str_eq(SSL_CIPHER_get_name(sk_SSL_CIPHER_value(active, 0)),
+                TLS_TEST_SHA384_NAME)
+            || !TEST_str_eq(SSL_CIPHER_get_name(sk_SSL_CIPHER_value(active, 1)),
+                TLS_TEST_SHA256_NAME))
             goto end;
-    } else if (!TEST_ptr_eq(sc->tls13_ciphersuites, old_tls)
-        || !TEST_ptr_eq(sc->cipher_list, old_list)
-        || !TEST_ptr_eq(sc->cipher_list_by_id, old_by_id)) {
-        goto end;
+        for (i = 0; i < 2; i++)
+            if (!TEST_ptr_eq(sk_SSL_CIPHER_value(active, i),
+                    sk_SSL_CIPHER_value(*stacks[0], i)))
+                goto end;
+        for (i = 0; i < sk_SSL_CIPHER_num(active); i++) {
+            cipher = sk_SSL_CIPHER_value(active, i);
+            pos = sk_SSL_CIPHER_find(by_id, cipher);
+            if (!TEST_int_ge(pos, 0)
+                || !TEST_ptr_eq(sk_SSL_CIPHER_value(by_id, pos), cipher))
+                goto end;
+        }
+        /* Updating TLS 1.3 must preserve every legacy entry and its order. */
+        j = 2;
+        for (i = 0; i < sk_SSL_CIPHER_num(context_list); i++) {
+            cipher = sk_SSL_CIPHER_value(context_list, i);
+            if (cipher->min_tls != TLS1_3_VERSION
+                && !TEST_ptr_eq(sk_SSL_CIPHER_value(active, j++), cipher))
+                goto end;
+        }
+        if (!TEST_int_eq(sk_SSL_CIPHER_num(active), j))
+            goto end;
+    } else {
+        for (i = 0; i < 3; i++)
+            if (!TEST_ptr_eq(*stacks[i], old[i])
+                || !cipher_stacks_equal(*stacks[i], saved[i]))
+                goto end;
     }
+    if (role != 2
+        && (!cipher_stacks_equal(ctx->cipher_list, context_list)
+            || !cipher_stacks_equal(ctx->cipher_list_by_id, context_by_id)))
+        goto end;
 
     ret = 1;
 end:
+    for (i = 0; i < 3; i++)
+        sk_SSL_CIPHER_free(saved[i]);
+    sk_SSL_CIPHER_free(context_list);
+    sk_SSL_CIPHER_free(context_by_id);
     SSL_free(ssl);
     SSL_CTX_free(ctx);
     ERR_clear_error();
@@ -1790,7 +1865,7 @@ int setup_tests(void)
     ADD_TEST(test_property_query_exclusion);
     ADD_TEST(test_provider_composition);
     ADD_MFAIL_SAMPLED_NO_CHECK_TEST(test_provider_discovery_mfail, 64);
-    ADD_MFAIL_SAMPLED_ALL_NO_CHECK_TESTS(test_ssl_ciphersuites_mfail, 2, 64);
+    ADD_MFAIL_SAMPLED_ALL_NO_CHECK_TESTS(test_ssl_ciphersuites_mfail, 6, 64);
     ADD_TEST(test_provider_hrr);
     ADD_ALL_TESTS(test_sni_context_switch, 4);
     ADD_TEST(test_switched_context_supported_ciphers);
