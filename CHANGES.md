@@ -32,6 +32,13 @@ OpenSSL 4.1
 
 ### Changes between 4.0 and 4.1 [xx XXX xxxx]
 
+ * Fixed allocation-failure handling in `SSL_CTX_set_ciphersuites()` and
+   `SSL_set_ciphersuites()`. If inserting a requested ciphersuite into the
+   active list fails, the setter now reports failure and preserves the
+   previous cipher lists instead of accepting an incomplete selection.
+
+   *Martin Wolf*
+
  * Added a `seed_strict` option to the `random` configuration section
    which makes the configured random seed source strictly enforced when
    a provider (such as the FIPS provider) requests entropy or a nonce.

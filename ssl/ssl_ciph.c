@@ -1567,7 +1567,10 @@ static int update_cipher_list(SSL_CTX *ctx,
                        .mask
                    & ctx->disabled_mac_mask)
                 == 0) {
-            sk_SSL_CIPHER_unshift(tmp_cipher_list, sslc);
+            if (!sk_SSL_CIPHER_unshift(tmp_cipher_list, sslc)) {
+                sk_SSL_CIPHER_free(tmp_cipher_list);
+                return 0;
+            }
         }
     }
 
