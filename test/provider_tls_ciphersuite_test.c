@@ -978,6 +978,8 @@ static int test_switched_context_supported_ciphers(void)
      * Switching back restores the original view. The borrowed stack stayed
      * valid because session_ctx keeps the initial context alive.
      */
+    SSL_CTX_free(alternate);
+    alternate = NULL;
     if (!TEST_ptr(SSL_set_SSL_CTX(ssl, NULL))
         || !TEST_ptr_eq(SSL_get_ciphers(ssl), borrowed)
         || !TEST_ptr(supported = SSL_get1_supported_ciphers(ssl))
@@ -989,7 +991,9 @@ static int test_switched_context_supported_ciphers(void)
     supported = NULL;
 
     /* A list set on the SSL persists across a switch and is canonical. */
-    if (!TEST_true(SSL_set_ciphersuites(ssl, TLS_TEST_SHA256_NAME))
+    if (!TEST_ptr(alternate = SSL_CTX_new_ex(libctx, "provider=default",
+                      TLS_method()))
+        || !TEST_true(SSL_set_ciphersuites(ssl, TLS_TEST_SHA256_NAME))
         || !TEST_ptr_ne(SSL_get_ciphers(ssl), borrowed)
         || !TEST_ptr(SSL_set_SSL_CTX(ssl, alternate))
         || !TEST_ptr_ne(SSL_get_ciphers(ssl), SSL_CTX_get_ciphers(alternate))
