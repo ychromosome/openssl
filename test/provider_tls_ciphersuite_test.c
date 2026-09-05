@@ -1174,6 +1174,50 @@ end:
     return ret;
 }
 
+/* Canonicalisation must preserve advertised identity and security metadata. */
+static int test_provider_descriptor_equivalence(void)
+{
+    SSL_CTX *ctx = NULL, *other = NULL;
+    SSL *ssl = NULL;
+    SSL_CONNECTION *sc;
+    const SSL_CIPHER *canonical, *equivalent;
+    SSL_CIPHER probe;
+    int i, ret = 0;
+
+    if (!TEST_ptr(ctx = SSL_CTX_new_ex(libctx, NULL, TLS_method()))
+        || !TEST_ptr(other = SSL_CTX_new_ex(libctx, NULL, TLS_method()))
+        || !TEST_ptr(ssl = SSL_new(ctx))
+        || !TEST_ptr(sc = SSL_CONNECTION_FROM_SSL_ONLY(ssl))
+        || !TEST_ptr(canonical = ssl_provider_ciphersuite_by_name(ctx,
+                         TLS_TEST_SHA384_NAME))
+        || !TEST_ptr(equivalent = ssl_provider_ciphersuite_by_name(other,
+                         TLS_TEST_SHA384_NAME))
+        || !TEST_ptr_ne(canonical, equivalent)
+        || !TEST_ptr_eq(ssl_cipher_canon(sc, equivalent), canonical))
+        goto end;
+
+    for (i = 0; i < 3; i++) {
+        /* Borrow the fields for comparison; the probe owns no references. */
+        probe = *equivalent;
+        if (i == 0)
+            probe.id ^= 1U;
+        else if (i == 1)
+            probe.name = "TLS_TEST_DIFFERENT_NAME";
+        else
+            probe.strength_bits = 128;
+        if (!TEST_ptr_null(ssl_cipher_canon(sc, &probe)))
+            goto end;
+    }
+
+    ret = 1;
+end:
+    SSL_free(ssl);
+    SSL_CTX_free(ctx);
+    SSL_CTX_free(other);
+    ERR_clear_error();
+    return ret;
+}
+
 static int test_ssl_dup_canonicalisation(void)
 {
     SSL_CTX *sctx = NULL, *cctx = NULL;
@@ -1735,6 +1779,7 @@ int setup_tests(void)
     ADD_ALL_TESTS(test_context_switch_saved_tls13_list, 2);
     ADD_ALL_TESTS(test_sni_switch_cipher_list_policy, 2);
     ADD_TEST(test_post_handshake_context_switch);
+    ADD_TEST(test_provider_descriptor_equivalence);
     ADD_TEST(test_ssl_dup_canonicalisation);
     ADD_TEST(test_ssl_dup_rejects_foreign_ciphersuite);
     ADD_TEST(test_one_sided_offer);

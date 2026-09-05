@@ -169,18 +169,12 @@ static int ssl_provider_ciphersuite_equivalent(const SSL_CIPHER *a,
 {
     if (a == b)
         return 1;
+    /* Other profile fields are fixed by add_provider_ciphersuite(). */
     if (a == NULL || b == NULL
         || a->origin != SSL_CIPHER_ORIGIN_PROVIDER
         || b->origin != SSL_CIPHER_ORIGIN_PROVIDER
         || a->id != b->id
         || OPENSSL_strcasecmp(a->name, b->name) != 0
-        || a->algorithm_mkey != b->algorithm_mkey
-        || a->algorithm_auth != b->algorithm_auth
-        || a->algorithm_enc != b->algorithm_enc
-        || a->algorithm_mac != b->algorithm_mac
-        || a->min_tls != b->min_tls || a->max_tls != b->max_tls
-        || a->min_dtls != b->min_dtls || a->max_dtls != b->max_dtls
-        || a->algo_strength != b->algo_strength
         || a->algorithm2 != b->algorithm2
         || a->strength_bits != b->strength_bits
         || a->alg_bits != b->alg_bits)
