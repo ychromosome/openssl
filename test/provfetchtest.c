@@ -16,7 +16,9 @@
 #include <openssl/core_names.h>
 #include "internal/thread_arch.h"
 #include "testutil.h"
+#if defined(OPENSSL_THREADS) && !defined(CRYPTO_TDEBUG)
 #include "threadstest.h"
+#endif
 
 #define CHILD_RANDOM_CHECK "child-random-check"
 

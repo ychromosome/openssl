@@ -332,6 +332,7 @@ static void count_server_hellos_cb(int write_p, int version, int content_type,
         (*count)++;
 }
 
+#ifndef OPENSSL_NO_TLS1_2
 static int expect_no_shared_cipher(SSL *serverssl, SSL *clientssl)
 {
     unsigned long error;
@@ -364,6 +365,7 @@ static int expect_no_shared_cipher(SSL *serverssl, SSL *clientssl)
         || ERR_GET_REASON(error) != SSL_R_NO_SHARED_CIPHER);
     return 1;
 }
+#endif
 
 typedef struct {
     SSL_CTX *first;
@@ -777,9 +779,9 @@ static int test_provider_hrr(void)
 #ifndef OPENSSL_NO_EC
         /* Group lists from tls13groupselection_test. */
         || !TEST_true(SSL_CTX_set1_groups_list(cctx,
-            "secp521r1:secp384r1:X25519:prime256v1:X448"))
+            "secp521r1:secp384r1:prime256v1"))
         || !TEST_true(SSL_CTX_set1_groups_list(sctx,
-            "X25519:secp384r1:prime256v1"))
+            "prime256v1:secp384r1"))
 #else
         || !TEST_true(SSL_CTX_set1_groups_list(cctx,
             "ffdhe2048:ffdhe3072"))
@@ -869,9 +871,9 @@ static int test_sni_context_switch(int idx)
         /* Trigger HRR after the context switch. */
 #ifndef OPENSSL_NO_EC
         if (!TEST_true(SSL_CTX_set1_groups_list(cctx,
-                "secp521r1:secp384r1:X25519:prime256v1:X448"))
+                "secp521r1:secp384r1:prime256v1"))
             || !TEST_true(SSL_CTX_set1_groups_list(sctx,
-                "X25519:secp384r1:prime256v1")))
+                "prime256v1:secp384r1")))
             goto end;
 #else
         if (!TEST_true(SSL_CTX_set1_groups_list(cctx, "ffdhe2048:ffdhe3072"))
@@ -1063,6 +1065,7 @@ end:
     return ret;
 }
 
+#ifndef OPENSSL_NO_TLS1_2
 static int sni_policy_cb(SSL *ssl, int *alert, void *arg)
 {
     if (SSL_set_SSL_CTX(ssl, arg) == NULL) {
@@ -1071,6 +1074,7 @@ static int sni_policy_cb(SSL *ssl, int *alert, void *arg)
     }
     return SSL_TLSEXT_ERR_OK;
 }
+#endif
 
 /*
  * The cipher list of an SSL_CTX selected by the servername callback applies
