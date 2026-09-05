@@ -1185,13 +1185,13 @@ end:
     return ret;
 }
 
-/* Canonicalisation must preserve advertised identity and security metadata. */
+/* Also runs with no-cached-fetch, where equal EVP methods have distinct pointers. */
 static int test_provider_descriptor_equivalence(void)
 {
     SSL_CTX *ctx = NULL, *other = NULL;
     SSL *ssl = NULL;
     SSL_CONNECTION *sc;
-    const SSL_CIPHER *canonical, *equivalent;
+    const SSL_CIPHER *canonical, *equivalent, *different;
     SSL_CIPHER probe;
     int i, ret = 0;
 
@@ -1203,19 +1203,25 @@ static int test_provider_descriptor_equivalence(void)
                          TLS_TEST_SHA384_NAME))
         || !TEST_ptr(equivalent = ssl_provider_ciphersuite_by_name(other,
                          TLS_TEST_SHA384_NAME))
+        || !TEST_ptr(different = ssl_provider_ciphersuite_by_name(other,
+                         TLS_TEST_SHA256_NAME))
         || !TEST_ptr_ne(canonical, equivalent)
         || !TEST_ptr_eq(ssl_cipher_canon(sc, equivalent), canonical))
         goto end;
 
-    for (i = 0; i < 3; i++) {
+    for (i = 0; i < 5; i++) {
         /* Borrow the fields for comparison; the probe owns no references. */
         probe = *equivalent;
         if (i == 0)
             probe.id ^= 1U;
         else if (i == 1)
             probe.name = "TLS_TEST_DIFFERENT_NAME";
-        else
+        else if (i == 2)
             probe.strength_bits = 128;
+        else if (i == 3)
+            probe.provider_cipher = different->provider_cipher;
+        else
+            probe.provider_digest = different->provider_digest;
         if (!TEST_ptr_null(ssl_cipher_canon(sc, &probe)))
             goto end;
     }

@@ -180,9 +180,17 @@ static int ssl_provider_ciphersuite_equivalent(const SSL_CIPHER *a,
         || a->alg_bits != b->alg_bits)
         return 0;
 
-    return a->provider_cipher != NULL && a->provider_digest != NULL
-        && a->provider_cipher == b->provider_cipher
-        && a->provider_digest == b->provider_digest;
+    /* Fetching without a cache allocates distinct objects for one algorithm. */
+    return a->provider_cipher != NULL && b->provider_cipher != NULL
+        && a->provider_digest != NULL && b->provider_digest != NULL
+        && EVP_CIPHER_get0_provider(a->provider_cipher)
+        == EVP_CIPHER_get0_provider(b->provider_cipher)
+        && EVP_CIPHER_is_a(a->provider_cipher,
+            EVP_CIPHER_get0_name(b->provider_cipher))
+        && EVP_MD_get0_provider(a->provider_digest)
+        == EVP_MD_get0_provider(b->provider_digest)
+        && EVP_MD_is_a(a->provider_digest,
+            EVP_MD_get0_name(b->provider_digest));
 }
 
 const SSL_CIPHER *ssl_cipher_canon(const SSL_CONNECTION *s,
