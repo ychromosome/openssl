@@ -16,7 +16,8 @@
 #include <openssl/core_names.h>
 #include "internal/thread_arch.h"
 #include "testutil.h"
-#if defined(OPENSSL_THREADS) && !defined(CRYPTO_TDEBUG)
+#if defined(OPENSSL_THREADS) && !defined(CRYPTO_TDEBUG) \
+    && !defined(OPENSSL_NO_THREAD_POOL)
 #include "threadstest.h"
 #endif
 
@@ -24,7 +25,8 @@
 
 static int dummy_provider_init(const OSSL_CORE_HANDLE *handle,
     const OSSL_DISPATCH *in, const OSSL_DISPATCH **out, void **provctx);
-#if defined(OPENSSL_THREADS) && !defined(CRYPTO_TDEBUG)
+#if defined(OPENSSL_THREADS) && !defined(CRYPTO_TDEBUG) \
+    && !defined(OPENSSL_NO_THREAD_POOL)
 static int dummy_provider_init_deferred(const OSSL_CORE_HANDLE *handle,
     const OSSL_DISPATCH *in, const OSSL_DISPATCH **out, void **provctx);
 #endif
@@ -254,7 +256,8 @@ static const OSSL_DISPATCH dummy_dispatch_table[] = {
     OSSL_DISPATCH_END
 };
 
-#if defined(OPENSSL_THREADS) && !defined(CRYPTO_TDEBUG)
+#if defined(OPENSSL_THREADS) && !defined(CRYPTO_TDEBUG) \
+    && !defined(OPENSSL_NO_THREAD_POOL)
 static OSSL_LIB_CTX *child_teardown_libctx;
 static OSSL_PROVIDER *child_teardown_provider;
 static CRYPTO_MUTEX *child_teardown_mutex;
@@ -390,7 +393,8 @@ static int dummy_provider_init(const OSSL_CORE_HANDLE *handle,
     return dummy_provider_init_common(handle, in, out, provctx, 1);
 }
 
-#if defined(OPENSSL_THREADS) && !defined(CRYPTO_TDEBUG)
+#if defined(OPENSSL_THREADS) && !defined(CRYPTO_TDEBUG) \
+    && !defined(OPENSSL_NO_THREAD_POOL)
 static int dummy_provider_init_deferred(const OSSL_CORE_HANDLE *handle,
     const OSSL_DISPATCH *in,
     const OSSL_DISPATCH **out,
@@ -473,7 +477,8 @@ err:
 int setup_tests(void)
 {
     ADD_ALL_TESTS(fetch_test, 8);
-#if defined(OPENSSL_THREADS) && !defined(CRYPTO_TDEBUG)
+#if defined(OPENSSL_THREADS) && !defined(CRYPTO_TDEBUG) \
+    && !defined(OPENSSL_NO_THREAD_POOL)
     ADD_TEST(test_child_provider_method_teardown);
 #endif
 
