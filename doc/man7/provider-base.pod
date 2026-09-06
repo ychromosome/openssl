@@ -665,6 +665,11 @@ cacheable or serialisable and do not produce session tickets. An application
 cannot supply such a session through external-PSK callbacks. Provider-backed
 external PSK and 0-RTT are not supported.
 
+A ticket or external PSK associated with a built-in ciphersuite may negotiate
+a provider-defined suite with the same transcript hash. The resulting session
+has provider-cipher provenance and cannot be resumed again. This does not
+change the original ticket or externally supplied PSK session.
+
 This capability supports the existing stream TLS 1.3 record profile: a
 12-byte IV, 16-byte tag, and SHA-256 or SHA-384 transcript digest. Discovery
 validates metadata only. Successful context creation does not guarantee that
