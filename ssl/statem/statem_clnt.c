@@ -900,7 +900,7 @@ WORK_STATE ossl_statem_client_post_work(SSL_CONNECTION *s, WORK_STATE wst)
             break;
         }
         if (!ossl_ssl_session_set1_cipher(s->session, s->s3.tmp.new_cipher)) {
-            SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_CRYPTO_LIB);
+            SSLfatal_alert(s, SSL_AD_INTERNAL_ERROR);
             return WORK_ERROR;
         }
 #ifdef OPENSSL_NO_COMP
@@ -2142,7 +2142,7 @@ MSG_PROCESS_RETURN tls_process_server_hello(SSL_CONNECTION *s, PACKET *pkt)
                         pref_cipher != NULL
                             ? pref_cipher
                             : ssl_get_cipher_by_char(s, cipherchars, 0))) {
-                    SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_CRYPTO_LIB);
+                    SSLfatal_alert(s, SSL_AD_INTERNAL_ERROR);
                     goto err;
                 }
             } else {
