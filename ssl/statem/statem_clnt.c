@@ -1741,7 +1741,7 @@ static int set_client_ciphersuite(SSL_CONNECTION *s,
         SSLfatal(s, SSL_AD_ILLEGAL_PARAMETER, SSL_R_UNKNOWN_CIPHER_RETURNED);
         return 0;
     }
-    c = ssl_cipher_canon_enabled(s, c);
+    c = ossl_ssl_get0_cipher_canon_enabled(s, c);
     if (c == NULL) {
         SSLfatal(s, SSL_AD_ILLEGAL_PARAMETER, SSL_R_WRONG_CIPHER_RETURNED);
         return 0;
@@ -1756,7 +1756,7 @@ static int set_client_ciphersuite(SSL_CONNECTION *s,
     }
 
     sk = ssl_get_ciphers_by_id(s);
-    i = ssl_cipher_stack_find(sk, c);
+    i = ossl_ssl_cipher_stack_find(sk, c);
     if (i < 0) {
         /* we did not say we would use this cipher */
         SSLfatal(s, SSL_AD_ILLEGAL_PARAMETER, SSL_R_WRONG_CIPHER_RETURNED);
@@ -1779,20 +1779,20 @@ static int set_client_ciphersuite(SSL_CONNECTION *s,
         s->session->cipher_id = s->session->cipher->id;
     if (s->hit && (s->session->cipher_id != c->id)) {
         if (SSL_CONNECTION_IS_VERSION13(s)) {
-            const EVP_MD *md = ssl_cipher_get_evp_md(sctx, c);
+            const EVP_MD *md = ossl_ssl_cipher_get0_md(sctx, c);
             const EVP_MD *session_md;
 
             if (!ossl_assert(s->session->cipher != NULL)) {
                 SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_INTERNAL_ERROR);
                 return 0;
             }
-            session_md = ssl_cipher_get_evp_md(sctx, s->session->cipher);
+            session_md = ossl_ssl_cipher_get0_md(sctx, s->session->cipher);
             /*
              * In TLSv1.3 it is valid for the server to select a different
              * ciphersuite as long as the hash is the same.
              */
             if (md == NULL || session_md == NULL
-                || !ssl_cipher_has_same_digest(c, s->session->cipher)) {
+                || !ossl_ssl_cipher_has_same_digest(c, s->session->cipher)) {
                 SSLfatal(s, SSL_AD_ILLEGAL_PARAMETER,
                     SSL_R_CIPHERSUITE_DIGEST_HAS_CHANGED);
                 return 0;

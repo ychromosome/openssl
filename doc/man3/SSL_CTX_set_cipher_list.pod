@@ -127,6 +127,9 @@ could be selected and 0 on complete failure.
 
 SSL_CTX_set_ciphersuites() and SSL_set_ciphersuites() return 1 if the requested
 ciphersuite list was configured, and 0 otherwise.
+Passing a NULL context, SSL object, or list string returns 0 and reports
+B<ERR_R_PASSED_NULL_PARAMETER> without changing the configured list.
+An empty string is valid and configures an empty TLSv1.3 ciphersuite list.
 
 =head1 SEE ALSO
 

@@ -2883,7 +2883,7 @@ __owur int ssl_get_prev_session(SSL_CONNECTION *s, CLIENTHELLO_MSG *hello);
 __owur SSL_SESSION *ssl_session_dup(const SSL_SESSION *src, int ticket);
 /**
  * @brief Replace a session's cipher while retaining a descriptor reference.
- * @param session Session to update, exclusively owned by the caller.
+ * @param session Session to update; caller must exclude concurrent access.
  * @param cipher Borrowed descriptor to retain, or NULL to clear the cipher.
  * @returns 1 on success, 0 if taking the new reference fails (no change).
  *
@@ -2893,16 +2893,57 @@ __owur SSL_SESSION *ssl_session_dup(const SSL_SESSION *src, int ticket);
  */
 __owur int ossl_ssl_session_set1_cipher(SSL_SESSION *session,
     const SSL_CIPHER *cipher);
-__owur int ssl_session_is_external_psk_admissible(const SSL_SESSION *session);
+/**
+ * @brief Check whether an external-PSK callback result has admissible provenance.
+ * @param session Callback result, or NULL when no PSK is offered.
+ * @returns 1 for NULL or a session with no provider-cipher provenance, else 0.
+ *
+ * This does not validate the protocol version or the rest of the PSK metadata.
+ */
+__owur int ossl_ssl_session_is_external_psk_admissible(const SSL_SESSION *session);
 __owur int ossl_ssl_cipher_up_ref(const SSL_CIPHER *cipher);
 void ossl_ssl_cipher_free(const SSL_CIPHER *cipher);
-__owur const SSL_CIPHER *ssl_cipher_canon(const SSL_CONNECTION *s,
+/**
+ * @brief Bind a provider descriptor to the connection's original registry.
+ * @param s Connection retaining session_ctx; required for provider descriptors.
+ * @param cipher Borrowed candidate descriptor, or NULL.
+ * @returns Borrowed session_ctx descriptor if equivalent, NULL if incompatible;
+ *          static descriptors and NULL are returned unchanged.
+ *
+ * Does not change the registry or transfer ownership. Equivalence includes the
+ * retained provider algorithms, so a matching wire ID alone is insufficient.
+ */
+__owur const SSL_CIPHER *ossl_ssl_get0_cipher_canon(const SSL_CONNECTION *s,
     const SSL_CIPHER *cipher);
-__owur const SSL_CIPHER *ssl_cipher_canon_enabled(const SSL_CONNECTION *s,
+/**
+ * @brief Canonicalise a descriptor and check the saved TLS 1.3 list.
+ * @param s Connection whose original registry and per-SSL list are used.
+ * @param cipher Borrowed candidate, or NULL.
+ * @returns Canonical descriptor, or NULL if incompatible or disabled.
+ *
+ * The extra enabled check applies only to provider suites. It does not consult
+ * a replacement SSL_CTX's TLS 1.3 list after SSL_set_SSL_CTX().
+ */
+__owur const SSL_CIPHER *ossl_ssl_get0_cipher_canon_enabled(const SSL_CONNECTION *s,
     const SSL_CIPHER *cipher);
-int ssl_cipher_stack_find(STACK_OF(SSL_CIPHER) *sk,
+/**
+ * @brief Find a cipher, comparing provider profiles across context registries.
+ * @param sk Borrowed cipher stack to search, or NULL for an empty stack.
+ * @param cipher Borrowed descriptor to find.
+ * @returns Matching index, or -1 if absent. Static suites use normal stack find.
+ */
+int ossl_ssl_cipher_stack_find(STACK_OF(SSL_CIPHER) *sk,
     const SSL_CIPHER *cipher);
-__owur int ssl_cipher_stack_canon(const SSL_CONNECTION *s,
+/**
+ * @brief Replace borrowed stack entries with original-context descriptors.
+ * @param s Connection retaining the target session_ctx registry.
+ * @param sk Shallow stack to update, or NULL for no entries.
+ * @returns 1 on success, 0 at the first incompatible descriptor.
+ *
+ * Earlier entries may have changed on failure. No descriptor references are
+ * acquired or released; callers should use a temporary stack for atomic edits.
+ */
+__owur int ossl_ssl_cipher_stack_canon(const SSL_CONNECTION *s,
     STACK_OF(SSL_CIPHER) *sk);
 __owur int ssl_cipher_id_cmp(const SSL_CIPHER *a, const SSL_CIPHER *b);
 DECLARE_OBJ_BSEARCH_GLOBAL_CMP_FN(SSL_CIPHER, SSL_CIPHER, ssl_cipher_id);
@@ -2924,9 +2965,21 @@ __owur int ssl_cipher_get_evp_cipher(SSL_CTX *ctx, const SSL_CIPHER *sslc,
     const EVP_CIPHER **enc);
 __owur int ssl_cipher_get_evp_cipher_sn(SSL_CTX *ctx, const SSL_CIPHER *sslc,
     const EVP_CIPHER **enc);
-__owur const EVP_MD *ssl_cipher_get_evp_md(SSL_CTX *ctx,
+/**
+ * @brief Return the retained provider digest or the context's built-in digest.
+ * @param ctx Context supplying built-in digest methods.
+ * @param sslc Borrowed cipher descriptor, or NULL.
+ * @returns Borrowed digest owned by sslc or ctx, or NULL if unavailable.
+ */
+__owur const EVP_MD *ossl_ssl_cipher_get0_md(SSL_CTX *ctx,
     const SSL_CIPHER *sslc);
-__owur int ssl_cipher_has_same_digest(const SSL_CIPHER *a,
+/**
+ * @brief Compare TLS transcript hash identities, independent of EVP pointers.
+ * @param a First cipher, or NULL.
+ * @param b Second cipher, or NULL.
+ * @returns 1 if both have the same nonzero handshake digest index, else 0.
+ */
+__owur int ossl_ssl_cipher_has_same_digest(const SSL_CIPHER *a,
     const SSL_CIPHER *b);
 __owur int ssl_cipher_get_evp_md_mac(SSL_CTX *ctx, const SSL_CIPHER *sslc,
     const EVP_MD **md,

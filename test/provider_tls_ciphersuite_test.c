@@ -113,20 +113,12 @@ static char *cert, *privkey;
 static int corrupt_records;
 static BIO_METHOD *corrupt_filter_method;
 
-static void copy_retry_flags(BIO *bio)
-{
-    BIO *next = BIO_next(bio);
-    int flags = BIO_test_flags(next, BIO_FLAGS_SHOULD_RETRY | BIO_FLAGS_RWS);
-
-    BIO_clear_flags(bio, BIO_FLAGS_SHOULD_RETRY | BIO_FLAGS_RWS);
-    BIO_set_flags(bio, flags);
-}
-
 static int corrupt_filter_read(BIO *bio, char *out, int outl)
 {
     int ret = BIO_read(BIO_next(bio), out, outl);
 
-    copy_retry_flags(bio);
+    BIO_clear_retry_flags(bio);
+    BIO_copy_next_retry(bio);
     return ret;
 }
 
@@ -146,7 +138,8 @@ static int corrupt_filter_write(BIO *bio, const char *in, int inl)
         ret = BIO_write(next, copy, inl);
         OPENSSL_free(copy);
     }
-    copy_retry_flags(bio);
+    BIO_clear_retry_flags(bio);
+    BIO_copy_next_retry(bio);
     return ret;
 }
 
@@ -713,6 +706,40 @@ static int cipher_stacks_equal(const STACK_OF(SSL_CIPHER) *actual,
     return 1;
 }
 
+static int test_ciphersuite_setter_null(int idx)
+{
+    SSL_CTX *ctx = NULL;
+    SSL *ssl = NULL;
+    STACK_OF(SSL_CIPHER) *ctx_ciphers, *ssl_ciphers;
+    int result, ret = 0;
+
+    if (!TEST_ptr(ctx = SSL_CTX_new_ex(libctx, NULL, TLS_method()))
+        || !TEST_ptr(ssl = SSL_new(ctx)))
+        goto end;
+    ctx_ciphers = SSL_CTX_get_ciphers(ctx);
+    ssl_ciphers = SSL_get_ciphers(ssl);
+    ERR_clear_error();
+    if (idx < 2)
+        result = SSL_CTX_set_ciphersuites(idx == 0 ? NULL : ctx,
+            idx == 0 ? TLS_TEST_SHA256_NAME : NULL);
+    else
+        result = SSL_set_ciphersuites(idx == 2 ? NULL : ssl,
+            idx == 2 ? TLS_TEST_SHA256_NAME : NULL);
+    if (!TEST_false(result)
+        || !TEST_int_eq(ERR_GET_LIB(ERR_peek_last_error()), ERR_LIB_SSL)
+        || !TEST_int_eq(ERR_GET_REASON(ERR_peek_last_error()),
+            ERR_R_PASSED_NULL_PARAMETER)
+        || !TEST_ptr_eq(SSL_CTX_get_ciphers(ctx), ctx_ciphers)
+        || !TEST_ptr_eq(SSL_get_ciphers(ssl), ssl_ciphers))
+        goto end;
+    ret = 1;
+end:
+    SSL_free(ssl);
+    SSL_CTX_free(ctx);
+    ERR_clear_error();
+    return ret;
+}
+
 static int test_ssl_ciphersuites_mfail(int idx)
 {
     SSL_CTX *ctx = NULL;
@@ -906,7 +933,8 @@ static int test_sni_context_switch(int idx)
 
     if (idx == 0 || idx == 2) {
         const char *target_suites = idx == 2
-            ? "TLS_AES_256_GCM_SHA384" : TLS_TEST_SHA256_NAME;
+            ? "TLS_AES_256_GCM_SHA384"
+            : TLS_TEST_SHA256_NAME;
 
         data.set_ciphersuites = 1;
         data.set_cipher_list = idx == 0;
@@ -1267,7 +1295,7 @@ static int test_provider_descriptor_equivalence(void)
         || !TEST_ptr(different = ossl_ssl_get0_provider_cipher_by_name(other,
                          TLS_TEST_SHA256_NAME))
         || !TEST_ptr_ne(canonical, equivalent)
-        || !TEST_ptr_eq(ssl_cipher_canon(sc, equivalent), canonical))
+        || !TEST_ptr_eq(ossl_ssl_get0_cipher_canon(sc, equivalent), canonical))
         goto end;
 
     for (i = 0; i < 5; i++) {
@@ -1283,7 +1311,7 @@ static int test_provider_descriptor_equivalence(void)
             probe.provider_cipher = different->provider_cipher;
         else
             probe.provider_digest = different->provider_digest;
-        if (!TEST_ptr_null(ssl_cipher_canon(sc, &probe)))
+        if (!TEST_ptr_null(ossl_ssl_get0_cipher_canon(sc, &probe)))
             goto end;
     }
 
@@ -1314,7 +1342,7 @@ static int test_ssl_dup_canonicalisation(void)
         || !TEST_true(SSL_set_ciphersuites(original, TLS_TEST_SHA256_NAME))
         || !TEST_ptr(serverssl = SSL_dup(original))
         || !TEST_ptr(sc = SSL_CONNECTION_FROM_SSL_ONLY(serverssl))
-        || !TEST_int_ge(idx = ssl_cipher_stack_find(sc->tls13_ciphersuites,
+        || !TEST_int_ge(idx = ossl_ssl_cipher_stack_find(sc->tls13_ciphersuites,
                             canonical),
             0)
         || !TEST_ptr_eq(sk_SSL_CIPHER_value(sc->tls13_ciphersuites, idx),
@@ -1850,6 +1878,7 @@ int setup_tests(void)
     ADD_TEST(test_provider_peer_list_deduplication);
     ADD_TEST(test_property_query_exclusion);
     ADD_TEST(test_provider_composition);
+    ADD_ALL_TESTS(test_ciphersuite_setter_null, 4);
     ADD_MFAIL_SAMPLED_NO_CHECK_TEST(test_provider_discovery_mfail, 64);
     ADD_MFAIL_SAMPLED_ALL_NO_CHECK_TESTS(test_ssl_ciphersuites_mfail, 6, 64);
     ADD_TEST(test_provider_hrr);

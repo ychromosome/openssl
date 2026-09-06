@@ -1469,7 +1469,7 @@ static int final_server_name(SSL_CONNECTION *s, unsigned int context, int sent)
     if (s->server && SSL_CONNECTION_IS_VERSION13(s)
         && s->s3.tmp.new_cipher != NULL
         && s->s3.tmp.new_cipher->origin == SSL_CIPHER_ORIGIN_PROVIDER) {
-        const SSL_CIPHER *cipher = ssl_cipher_canon_enabled(s, s->s3.tmp.new_cipher);
+        const SSL_CIPHER *cipher = ossl_ssl_get0_cipher_canon_enabled(s, s->s3.tmp.new_cipher);
 
         if (cipher == NULL) {
             SSLfatal(s, SSL_AD_HANDSHAKE_FAILURE, SSL_R_NO_SHARED_CIPHER);

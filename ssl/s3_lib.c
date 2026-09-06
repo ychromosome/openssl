@@ -4981,9 +4981,9 @@ const SSL_CIPHER *ssl3_choose_cipher(SSL_CONNECTION *s, STACK_OF(SSL_CIPHER) *cl
             if (!ok)
                 continue;
         }
-        ii = ssl_cipher_stack_find(allow, c);
+        ii = ossl_ssl_cipher_stack_find(allow, c);
         if (ii >= 0) {
-            const SSL_CIPHER *canonical = ssl_cipher_canon_enabled(s, c);
+            const SSL_CIPHER *canonical = ossl_ssl_get0_cipher_canon_enabled(s, c);
 
             if (canonical == NULL)
                 continue;
@@ -5003,7 +5003,7 @@ const SSL_CIPHER *ssl3_choose_cipher(SSL_CONNECTION *s, STACK_OF(SSL_CIPHER) *cl
                 const SSL_CIPHER *tmp = canonical;
                 const EVP_MD *md;
 
-                md = ssl_cipher_get_evp_md(SSL_CONNECTION_GET_CTX(s), tmp);
+                md = ossl_ssl_cipher_get0_md(SSL_CONNECTION_GET_CTX(s), tmp);
 
                 if (md != NULL
                     && EVP_MD_is_a(md, OSSL_DIGEST_NAME_SHA2_256)) {

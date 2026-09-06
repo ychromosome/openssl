@@ -144,7 +144,7 @@ int ossl_ssl_session_set1_cipher(SSL_SESSION *session, const SSL_CIPHER *cipher)
     return 1;
 }
 
-int ssl_session_is_external_psk_admissible(const SSL_SESSION *session)
+int ossl_ssl_session_is_external_psk_admissible(const SSL_SESSION *session)
 {
     return session == NULL
         || (!session->provider_cipher_seen

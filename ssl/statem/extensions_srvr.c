@@ -1384,7 +1384,7 @@ int tls_parse_ctos_psk(SSL_CONNECTION *s, PACKET *pkt, unsigned int context,
             SSLfatal(s, SSL_AD_INTERNAL_ERROR, SSL_R_BAD_EXTENSION);
             return 0;
         }
-        if (!ssl_session_is_external_psk_admissible(sess)) {
+        if (!ossl_ssl_session_is_external_psk_admissible(sess)) {
             SSLfatal(s, SSL_AD_ILLEGAL_PARAMETER, SSL_R_BAD_PSK);
             goto err;
         }
@@ -1549,7 +1549,7 @@ int tls_parse_ctos_psk(SSL_CONNECTION *s, PACKET *pkt, unsigned int context,
             ext = 0;
         }
 
-        if (!ssl_cipher_has_same_digest(sess->cipher,
+        if (!ossl_ssl_cipher_has_same_digest(sess->cipher,
                 s->s3.tmp.new_cipher)) {
             /* The ciphersuite is not compatible with this session. */
             SSL_SESSION_free(sess);
@@ -1563,7 +1563,7 @@ int tls_parse_ctos_psk(SSL_CONNECTION *s, PACKET *pkt, unsigned int context,
             s->ext.ticket_expected = 1;
             continue;
         }
-        md = ssl_cipher_get_evp_md(sctx, sess->cipher);
+        md = ossl_ssl_cipher_get0_md(sctx, sess->cipher);
         if (md == NULL) {
             SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_INTERNAL_ERROR);
             goto err;

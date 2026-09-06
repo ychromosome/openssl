@@ -1115,11 +1115,11 @@ static int tls13_check_resumption_psk(SSL_CONNECTION *s)
         || s->session->provider_cipher_seen)
         return 0;
 
-    mdres = ssl_cipher_get_evp_md(sctx, s->session->cipher);
+    mdres = ossl_ssl_cipher_get0_md(sctx, s->session->cipher);
     if (mdres == NULL)
         return 0;
     if (s->hello_retry_request == SSL_HRR_PENDING
-        && !ssl_cipher_has_same_digest(s->session->cipher,
+        && !ossl_ssl_cipher_has_same_digest(s->session->cipher,
             s->s3.tmp.new_cipher))
         return 0;
     if (tls13_check_tick_lifetime_hint(s) == 0)
@@ -1178,7 +1178,7 @@ EXT_RETURN tls_construct_ctos_early_data(SSL_CONNECTION *s, WPACKET *pkt,
     if (s->psk_use_session_cb != NULL
         && (!s->psk_use_session_cb(ussl, handmd, &id, &idlen, &psksess)
             || (psksess != NULL && psksess->ssl_version != version1_3)
-            || !ssl_session_is_external_psk_admissible(psksess))) {
+            || !ossl_ssl_session_is_external_psk_admissible(psksess))) {
         SSL_SESSION_free(psksess);
         SSLfatal(s, SSL_AD_INTERNAL_ERROR, SSL_R_BAD_PSK);
         return EXT_RETURN_FAIL;
@@ -1401,7 +1401,7 @@ EXT_RETURN tls_construct_ctos_psk(SSL_CONNECTION *s, WPACKET *pkt,
             SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_INTERNAL_ERROR);
             return EXT_RETURN_FAIL;
         }
-        mdres = ssl_cipher_get_evp_md(sctx, s->session->cipher);
+        mdres = ossl_ssl_cipher_get0_md(sctx, s->session->cipher);
         if (mdres == NULL) {
             /*
              * Don't recognize this cipher so we can't use the session.
@@ -1411,7 +1411,7 @@ EXT_RETURN tls_construct_ctos_psk(SSL_CONNECTION *s, WPACKET *pkt,
         }
 
         if (s->hello_retry_request == SSL_HRR_PENDING
-            && !ssl_cipher_has_same_digest(s->session->cipher,
+            && !ossl_ssl_cipher_has_same_digest(s->session->cipher,
                 s->s3.tmp.new_cipher)) {
             /*
              * Selected ciphersuite hash does not match the hash for the session
@@ -1461,7 +1461,7 @@ dopsksess:
         return EXT_RETURN_NOT_SENT;
 
     if (s->psksession != NULL) {
-        mdpsk = ssl_cipher_get_evp_md(sctx, s->psksession->cipher);
+        mdpsk = ossl_ssl_cipher_get0_md(sctx, s->psksession->cipher);
         if (mdpsk == NULL) {
             /*
              * Don't recognize this cipher so we can't use the session.
@@ -1472,7 +1472,7 @@ dopsksess:
         }
 
         if (s->hello_retry_request == SSL_HRR_PENDING
-            && !ssl_cipher_has_same_digest(s->psksession->cipher,
+            && !ossl_ssl_cipher_has_same_digest(s->psksession->cipher,
                 s->s3.tmp.new_cipher)) {
             /*
              * Selected ciphersuite hash does not match the hash for the PSK

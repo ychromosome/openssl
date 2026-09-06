@@ -164,6 +164,15 @@ void ossl_ssl_cipher_free(const SSL_CIPHER *cipher)
     OPENSSL_free(mutable_cipher);
 }
 
+/**
+ * @brief Compare provider profiles and their retained algorithm implementations.
+ * @param a First descriptor, or NULL.
+ * @param b Second descriptor, or NULL.
+ * @returns 1 for identical pointers or equivalent provider profiles, otherwise 0.
+ *
+ * Different EVP objects may represent the same provider algorithm when fetch
+ * caching is disabled. Matching the wire ID alone is insufficient.
+ */
 static int ssl_provider_ciphersuite_equivalent(const SSL_CIPHER *a,
     const SSL_CIPHER *b)
 {
@@ -193,7 +202,7 @@ static int ssl_provider_ciphersuite_equivalent(const SSL_CIPHER *a,
             EVP_MD_get0_name(b->provider_digest));
 }
 
-const SSL_CIPHER *ssl_cipher_canon(const SSL_CONNECTION *s,
+const SSL_CIPHER *ossl_ssl_get0_cipher_canon(const SSL_CONNECTION *s,
     const SSL_CIPHER *cipher)
 {
     const SSL_CIPHER *canonical;
@@ -208,20 +217,20 @@ const SSL_CIPHER *ssl_cipher_canon(const SSL_CONNECTION *s,
     return canonical;
 }
 
-const SSL_CIPHER *ssl_cipher_canon_enabled(const SSL_CONNECTION *s,
+const SSL_CIPHER *ossl_ssl_get0_cipher_canon_enabled(const SSL_CONNECTION *s,
     const SSL_CIPHER *cipher)
 {
-    const SSL_CIPHER *canonical = ssl_cipher_canon(s, cipher);
+    const SSL_CIPHER *canonical = ossl_ssl_get0_cipher_canon(s, cipher);
 
     if (canonical == NULL || canonical->origin != SSL_CIPHER_ORIGIN_PROVIDER)
         return canonical;
     if (s->tls13_ciphersuites == NULL
-        || ssl_cipher_stack_find(s->tls13_ciphersuites, canonical) < 0)
+        || ossl_ssl_cipher_stack_find(s->tls13_ciphersuites, canonical) < 0)
         return NULL;
     return canonical;
 }
 
-int ssl_cipher_stack_find(STACK_OF(SSL_CIPHER) *sk,
+int ossl_ssl_cipher_stack_find(STACK_OF(SSL_CIPHER) *sk,
     const SSL_CIPHER *cipher)
 {
     int i;
@@ -239,13 +248,13 @@ int ssl_cipher_stack_find(STACK_OF(SSL_CIPHER) *sk,
     return -1;
 }
 
-int ssl_cipher_stack_canon(const SSL_CONNECTION *s, STACK_OF(SSL_CIPHER) *sk)
+int ossl_ssl_cipher_stack_canon(const SSL_CONNECTION *s, STACK_OF(SSL_CIPHER) *sk)
 {
     int i;
 
     for (i = 0; i < sk_SSL_CIPHER_num(sk); i++) {
         const SSL_CIPHER *cipher = sk_SSL_CIPHER_value(sk, i);
-        const SSL_CIPHER *canonical = ssl_cipher_canon(s, cipher);
+        const SSL_CIPHER *canonical = ossl_ssl_get0_cipher_canon(s, cipher);
 
         if (canonical == NULL)
             return 0;
@@ -254,6 +263,12 @@ int ssl_cipher_stack_canon(const SSL_CONNECTION *s, STACK_OF(SSL_CIPHER) *sk)
     return 1;
 }
 
+/**
+ * @brief Resolve a provider wire ID through the original session context.
+ * @param s Connection, or NULL; only stream TLS permits provider suites.
+ * @param ptr Two-byte cipher ID in network order.
+ * @returns Borrowed descriptor, or NULL if unavailable for this connection.
+ */
 static const SSL_CIPHER *ssl_provider_ciphersuite_by_char(
     const SSL_CONNECTION *s, const unsigned char *ptr)
 {
@@ -582,7 +597,7 @@ int ssl_cipher_get_evp_cipher(SSL_CTX *ctx, const SSL_CIPHER *sslc,
     return 1;
 }
 
-const EVP_MD *ssl_cipher_get_evp_md(SSL_CTX *ctx, const SSL_CIPHER *sslc)
+const EVP_MD *ossl_ssl_cipher_get0_md(SSL_CTX *ctx, const SSL_CIPHER *sslc)
 {
     if (sslc == NULL)
         return NULL;
@@ -761,7 +776,7 @@ const EVP_MD *ssl_md(SSL_CTX *ctx, int idx)
     return ctx->ssl_digest_methods[idx];
 }
 
-int ssl_cipher_has_same_digest(const SSL_CIPHER *a, const SSL_CIPHER *b)
+int ossl_ssl_cipher_has_same_digest(const SSL_CIPHER *a, const SSL_CIPHER *b)
 {
     uint32_t a_digest, b_digest;
 
@@ -1490,6 +1505,12 @@ static int ciphersuite_cb(const char *elem, int len, void *arg)
     return 1;
 }
 
+/**
+ * @brief Parse an explicit TLS 1.3 list using built-in and provider names.
+ * @param ctx Context whose immutable provider registry supplies descriptors.
+ * @param str Non-NULL colon-separated list; the empty string is valid.
+ * @returns A new shallow stack owned by the caller, or NULL on failure.
+ */
 static STACK_OF(SSL_CIPHER) *parse_ciphersuites(const SSL_CTX *ctx,
     const char *str)
 {
@@ -1587,8 +1608,13 @@ static int update_cipher_list(SSL_CTX *ctx,
 
 int SSL_CTX_set_ciphersuites(SSL_CTX *ctx, const char *str)
 {
-    STACK_OF(SSL_CIPHER) *newciphers = parse_ciphersuites(ctx, str);
+    STACK_OF(SSL_CIPHER) *newciphers;
 
+    if (ctx == NULL || str == NULL) {
+        ERR_raise(ERR_LIB_SSL, ERR_R_PASSED_NULL_PARAMETER);
+        return 0;
+    }
+    newciphers = parse_ciphersuites(ctx, str);
     if (newciphers == NULL)
         return 0;
     if (ctx->cipher_list != NULL
@@ -1606,8 +1632,13 @@ int SSL_CTX_set_ciphersuites(SSL_CTX *ctx, const char *str)
 int SSL_set_ciphersuites(SSL *s, const char *str)
 {
     STACK_OF(SSL_CIPHER) *newciphers, *cipher_list, *inherited = NULL;
-    SSL_CONNECTION *sc = SSL_CONNECTION_FROM_SSL(s);
+    SSL_CONNECTION *sc;
 
+    if (s == NULL || str == NULL) {
+        ERR_raise(ERR_LIB_SSL, ERR_R_PASSED_NULL_PARAMETER);
+        return 0;
+    }
+    sc = SSL_CONNECTION_FROM_SSL(s);
     if (sc == NULL)
         return 0;
 
@@ -1628,7 +1659,7 @@ int SSL_set_ciphersuites(SSL *s, const char *str)
             ERR_raise(ERR_LIB_SSL, ERR_R_CRYPTO_LIB);
             goto err;
         }
-        if (!ssl_cipher_stack_canon(sc, inherited)) {
+        if (!ossl_ssl_cipher_stack_canon(sc, inherited)) {
             ERR_raise(ERR_LIB_SSL, SSL_R_INVALID_CONTEXT);
             goto err;
         }
@@ -2593,7 +2624,7 @@ int ssl_cipher_list_to_bytes(SSL_CONNECTION *s, STACK_OF(SSL_CIPHER) *sk,
     for (i = 0; i < sk_SSL_CIPHER_num(sk) && totlen < maxlen; i++) {
         const SSL_CIPHER *c;
 
-        c = ssl_cipher_canon_enabled(s, sk_SSL_CIPHER_value(sk, i));
+        c = ossl_ssl_get0_cipher_canon_enabled(s, sk_SSL_CIPHER_value(sk, i));
         if (c == NULL)
             continue;
         /* Skip disabled ciphers */
