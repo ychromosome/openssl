@@ -3263,6 +3263,10 @@ MSG_PROCESS_RETURN tls_process_new_session_ticket(SSL_CONNECTION *s,
         PACKET extpkt;
         uint32_t max_early_data = s->session->ext.max_early_data;
 
+        /*
+         * Validate discarded tickets too, without adopting their early-data
+         * policy into a session that cannot be resumed.
+         */
         if (!PACKET_forward(pkt, ticklen)
             || (SSL_CONNECTION_IS_VERSION13(s)
                 && (!PACKET_as_length_prefixed_2(pkt, &extpkt)

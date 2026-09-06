@@ -119,24 +119,29 @@ static MSG_PROCESS_RETURN process_nst_extensions(SSL_CTX *ctx,
     SSL_CONNECTION *sc = NULL;
     SSL_SESSION *session = NULL;
     PACKET packet;
+    WPACKET builder;
+    size_t nst_len;
     MSG_PROCESS_RETURN result = MSG_PROCESS_ERROR;
 
-    if (extensions_len > sizeof(nst) - 14)
+    if (!WPACKET_init_static_len(&builder, nst, sizeof(nst), 0))
         return MSG_PROCESS_ERROR;
-    nst[3] = 1;
-    nst[10] = 1;
-    nst[11] = 0x42;
-    nst[12] = (unsigned char)(extensions_len >> 8);
-    nst[13] = (unsigned char)extensions_len;
-    if (extensions_len > 0)
-        memcpy(nst + 14, extensions, extensions_len);
+    if (!WPACKET_put_bytes_u32(&builder, 1) /* ticket_lifetime */
+        || !WPACKET_put_bytes_u32(&builder, 0) /* ticket_age_add */
+        || !WPACKET_put_bytes_u8(&builder, 0) /* empty ticket_nonce */
+        || !WPACKET_start_sub_packet_u16(&builder)
+        || !WPACKET_put_bytes_u8(&builder, 0x42) /* ticket */
+        || !WPACKET_close(&builder)
+        || !WPACKET_sub_memcpy_u16(&builder, extensions, extensions_len)
+        || !WPACKET_finish(&builder)
+        || !WPACKET_get_total_written(&builder, &nst_len))
+        goto end;
 
     ssl = SSL_new(ctx);
     session = SSL_SESSION_new();
     if (ssl == NULL || session == NULL
         || !ossl_ssl_session_set1_cipher(session, cipher)
         || !SSL_SESSION_set_protocol_version(session, TLS1_3_VERSION)
-        || !PACKET_buf_init(&packet, nst, 14 + extensions_len))
+        || !PACKET_buf_init(&packet, nst, nst_len))
         goto end;
 
     sc = SSL_CONNECTION_FROM_SSL(ssl);
@@ -148,6 +153,7 @@ static MSG_PROCESS_RETURN process_nst_extensions(SSL_CTX *ctx,
 end:
     if (max_early_data != NULL && sc != NULL && sc->session != NULL)
         *max_early_data = sc->session->ext.max_early_data;
+    WPACKET_cleanup(&builder);
     SSL_SESSION_free(session);
     SSL_free(ssl);
     return result;
@@ -409,13 +415,8 @@ int setup_tests(void)
     if (!test_skip_common_options()
         || !TEST_ptr(cert = test_get_argument(0))
         || !TEST_ptr(privkey = test_get_argument(1))
-        || !TEST_ptr(libctx = OSSL_LIB_CTX_new())
-        || !TEST_true(OSSL_PROVIDER_add_builtin(libctx, "tls-provider",
-            tls_provider_init))
-        || !TEST_ptr(defprov = OSSL_PROVIDER_load(libctx, "default"))
-        || !TEST_ptr(tlsprov = tls_provider_load(libctx, "tls-provider", "valid"))
-        || !TEST_true(EVP_set_default_properties(libctx,
-            "?provider=tls-provider")))
+        || !TEST_true(tls_provider_libctx_new(&libctx, &defprov, &tlsprov,
+            "tls-provider", "valid", "?provider=tls-provider")))
         return 0;
 
     ADD_TEST(test_builtin_nonresumable_serialises);
@@ -427,7 +428,5 @@ int setup_tests(void)
 
 void cleanup_tests(void)
 {
-    OSSL_PROVIDER_unload(tlsprov);
-    OSSL_PROVIDER_unload(defprov);
-    OSSL_LIB_CTX_free(libctx);
+    tls_provider_libctx_free(libctx, defprov, tlsprov);
 }

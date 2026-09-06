@@ -721,14 +721,8 @@ static int test_provider_aead_limit_failure(void)
     size_t written = 0;
     int i, write_ret, ret = 0;
 
-    if (!TEST_ptr(localctx = OSSL_LIB_CTX_new())
-        || !TEST_true(OSSL_PROVIDER_add_builtin(localctx,
-            "tls-provider-limit", tls_provider_init))
-        || !TEST_ptr(localdef = OSSL_PROVIDER_load(localctx, "default"))
-        || !TEST_ptr(localtls = tls_provider_load(localctx,
-                         "tls-provider-limit", "valid-limit"))
-        || !TEST_true(EVP_set_default_properties(localctx,
-            "?provider=tls-provider"))
+    if (!TEST_true(tls_provider_libctx_new(&localctx, &localdef, &localtls,
+            "tls-provider-limit", "valid-limit", "?provider=tls-provider"))
         || !TEST_true(create_ssl_ctx_pair(localctx, TLS_server_method(),
             TLS_client_method(), TLS1_3_VERSION, TLS1_3_VERSION,
             &sctx, &cctx, cert, privkey))
@@ -764,9 +758,7 @@ end:
     SSL_free(clientssl);
     SSL_CTX_free(sctx);
     SSL_CTX_free(cctx);
-    OSSL_PROVIDER_unload(localtls);
-    OSSL_PROVIDER_unload(localdef);
-    OSSL_LIB_CTX_free(localctx);
+    tls_provider_libctx_free(localctx, localdef, localtls);
     ERR_clear_error();
     return ret;
 }
@@ -1088,12 +1080,8 @@ static int test_provider_discovery_reload_lifecycle(void)
     int i, ret = 0;
 
     for (i = 0; i < 64; i++) {
-        if (!TEST_ptr(ctx = OSSL_LIB_CTX_new())
-            || !TEST_true(OSSL_PROVIDER_add_builtin(ctx, "tls-provider-reload",
-                tls_provider_init))
-            || !TEST_ptr(local_default = OSSL_PROVIDER_load(ctx, "default"))
-            || !TEST_ptr(provider = tls_provider_load(ctx,
-                             "tls-provider-reload", "valid"))
+        if (!TEST_true(tls_provider_libctx_new(&ctx, &local_default, &provider,
+                "tls-provider-reload", "valid", NULL))
             || !TEST_ptr(sslctx = SSL_CTX_new_ex(ctx, NULL, TLS_method()))
             || !TEST_int_eq(sk_SSL_CIPHER_num(
                                 sslctx->provider_ciphersuites),
@@ -1113,9 +1101,7 @@ static int test_provider_discovery_reload_lifecycle(void)
     ret = 1;
 end:
     SSL_CTX_free(sslctx);
-    OSSL_PROVIDER_unload(provider);
-    OSSL_PROVIDER_unload(local_default);
-    OSSL_LIB_CTX_free(ctx);
+    tls_provider_libctx_free(ctx, local_default, provider);
     ERR_clear_error();
     return ret;
 }
@@ -1133,13 +1119,8 @@ static void provider_discovery_reload_worker(void)
     int i, ok = 1, tmp;
 
     for (i = 0; ok && i < RELOADS_PER_THREAD; i++) {
-        ok = (ctx = OSSL_LIB_CTX_new()) != NULL
-            && OSSL_PROVIDER_add_builtin(ctx, "tls-provider-reload-thread",
-                tls_provider_init)
-            && (local_default = OSSL_PROVIDER_load(ctx, "default")) != NULL
-            && (provider = tls_provider_load(ctx,
-                    "tls-provider-reload-thread", "valid"))
-                != NULL
+        ok = tls_provider_libctx_new(&ctx, &local_default, &provider,
+                 "tls-provider-reload-thread", "valid", NULL)
             && (sslctx = SSL_CTX_new_ex(ctx, NULL, TLS_method())) != NULL
             && sk_SSL_CIPHER_num(sslctx->provider_ciphersuites) == 1;
         OSSL_PROVIDER_unload(provider);
@@ -1154,9 +1135,7 @@ static void provider_discovery_reload_worker(void)
         ctx = NULL;
     }
     SSL_CTX_free(sslctx);
-    OSSL_PROVIDER_unload(provider);
-    OSSL_PROVIDER_unload(local_default);
-    OSSL_LIB_CTX_free(ctx);
+    tls_provider_libctx_free(ctx, local_default, provider);
     if (!ok)
         CRYPTO_atomic_add(&reload_failures, 1, &tmp, reload_lock);
 }
@@ -1196,14 +1175,8 @@ int setup_tests(void)
     if (!test_skip_common_options()
         || !TEST_ptr(cert = test_get_argument(0))
         || !TEST_ptr(privkey = test_get_argument(1))
-        || !TEST_ptr(libctx = OSSL_LIB_CTX_new())
-        || !TEST_true(OSSL_PROVIDER_add_builtin(libctx, "tls-provider",
-            tls_provider_init))
-        || !TEST_ptr(defprov = OSSL_PROVIDER_load(libctx, "default"))
-        || !TEST_ptr(tlsprov = tls_provider_load(libctx, "tls-provider",
-                         "valid-both"))
-        || !TEST_true(EVP_set_default_properties(libctx,
-            "?provider=tls-provider")))
+        || !TEST_true(tls_provider_libctx_new(&libctx, &defprov, &tlsprov,
+            "tls-provider", "valid-both", "?provider=tls-provider")))
         return 0;
 
     ADD_ALL_TESTS(test_resume_into_provider_suite, 4);
@@ -1226,7 +1199,5 @@ int setup_tests(void)
 
 void cleanup_tests(void)
 {
-    OSSL_PROVIDER_unload(tlsprov);
-    OSSL_PROVIDER_unload(defprov);
-    OSSL_LIB_CTX_free(libctx);
+    tls_provider_libctx_free(libctx, defprov, tlsprov);
 }

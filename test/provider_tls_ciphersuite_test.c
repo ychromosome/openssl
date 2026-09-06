@@ -315,24 +315,9 @@ static void count_server_hellos_cb(int write_p, int version, int content_type,
 static int expect_no_shared_cipher(SSL *serverssl, SSL *clientssl)
 {
     unsigned long error;
-    int i, client_error, client_rc, server_rc = 1;
 
     ERR_clear_error();
-    for (i = 0; i < 4; i++) {
-        client_rc = SSL_connect(clientssl);
-        if (client_rc <= 0) {
-            client_error = SSL_get_error(clientssl, client_rc);
-            if (client_error != SSL_ERROR_WANT_READ
-                && client_error != SSL_ERROR_WANT_WRITE
-                && client_error != SSL_ERROR_SSL)
-                return 0;
-        }
-        server_rc = SSL_accept(serverssl);
-        if (server_rc <= 0
-            && SSL_get_error(serverssl, server_rc) == SSL_ERROR_SSL)
-            break;
-    }
-    if (!TEST_int_le(server_rc, 0))
+    if (!TEST_false(create_ssl_connection(serverssl, clientssl, SSL_ERROR_SSL)))
         return 0;
     do {
         error = ERR_get_error();
@@ -430,14 +415,8 @@ static int test_ciphersuite_mode(int idx)
     SSL_CTX *ctx = NULL;
     int i, ret = 0;
 
-    if (!TEST_ptr(localctx = OSSL_LIB_CTX_new())
-        || !TEST_true(OSSL_PROVIDER_add_builtin(localctx, "tls-provider-mode",
-            tls_provider_init))
-        || !TEST_ptr(localdef = OSSL_PROVIDER_load(localctx, "default"))
-        || !TEST_ptr(localtls = tls_provider_load(localctx,
-                         "tls-provider-mode", test->mode))
-        || !TEST_true(EVP_set_default_properties(localctx,
-            "?provider=tls-provider")))
+    if (!TEST_true(tls_provider_libctx_new(&localctx, &localdef, &localtls,
+            "tls-provider-mode", test->mode, "?provider=tls-provider")))
         goto end;
     ctx = SSL_CTX_new_ex(localctx, NULL, TLS_method());
     if (test->expect_success) {
@@ -466,9 +445,7 @@ static int test_ciphersuite_mode(int idx)
 end:
     ERR_clear_error();
     SSL_CTX_free(ctx);
-    OSSL_PROVIDER_unload(localtls);
-    OSSL_PROVIDER_unload(localdef);
-    OSSL_LIB_CTX_free(localctx);
+    tls_provider_libctx_free(localctx, localdef, localtls);
     return ret;
 }
 
@@ -501,14 +478,8 @@ static int test_provider_registry_indexes(void)
     uint32_t id;
     int i, ret = 0;
 
-    if (!TEST_ptr(localctx = OSSL_LIB_CTX_new())
-        || !TEST_true(OSSL_PROVIDER_add_builtin(localctx,
-            "tls-provider-many", tls_provider_init))
-        || !TEST_ptr(localdef = OSSL_PROVIDER_load(localctx, "default"))
-        || !TEST_ptr(localtls = tls_provider_load(localctx,
-                         "tls-provider-many", "valid-many"))
-        || !TEST_true(EVP_set_default_properties(localctx,
-            "?provider=tls-provider"))
+    if (!TEST_true(tls_provider_libctx_new(&localctx, &localdef, &localtls,
+            "tls-provider-many", "valid-many", "?provider=tls-provider"))
         || !TEST_ptr(ctx = SSL_CTX_new_ex(localctx, NULL, TLS_method()))
         || !TEST_int_eq(sk_SSL_CIPHER_num(ctx->provider_ciphersuites),
             TLS_TEST_MANY_COUNT)
@@ -558,9 +529,7 @@ static int test_provider_registry_indexes(void)
     ret = 1;
 end:
     SSL_CTX_free(ctx);
-    OSSL_PROVIDER_unload(localtls);
-    OSSL_PROVIDER_unload(localdef);
-    OSSL_LIB_CTX_free(localctx);
+    tls_provider_libctx_free(localctx, localdef, localtls);
     ERR_clear_error();
     return ret;
 }
@@ -611,13 +580,8 @@ static int test_provider_composition(void)
     size_t written = 0, readbytes = 0;
     int ret = 0;
 
-    if (!TEST_ptr(localctx = OSSL_LIB_CTX_new())
-        || !TEST_true(OSSL_PROVIDER_add_builtin(localctx,
-            "tls-provider-composed", tls_provider_init))
-        || !TEST_ptr(localdef = OSSL_PROVIDER_load(localctx, "default"))
-        || !TEST_ptr(localtls = tls_provider_load(localctx,
-                         "tls-provider-composed", "valid-composed"))
-        || !TEST_true(EVP_set_default_properties(localctx, "provider=default"))
+    if (!TEST_true(tls_provider_libctx_new(&localctx, &localdef, &localtls,
+            "tls-provider-composed", "valid-composed", "provider=default"))
         || !TEST_true(create_ssl_ctx_pair(localctx, TLS_server_method(),
             TLS_client_method(), TLS1_3_VERSION, TLS1_3_VERSION,
             &sctx, &cctx, cert, privkey))
@@ -668,9 +632,7 @@ end:
     SSL_free(clientssl);
     SSL_CTX_free(sctx);
     SSL_CTX_free(cctx);
-    OSSL_PROVIDER_unload(localtls);
-    OSSL_PROVIDER_unload(localdef);
-    OSSL_LIB_CTX_free(localctx);
+    tls_provider_libctx_free(localctx, localdef, localtls);
     ERR_clear_error();
     return ret;
 }
@@ -1390,14 +1352,8 @@ static int test_ssl_dup_rejects_foreign_ciphersuite(void)
         || !TEST_ptr(sc = SSL_CONNECTION_FROM_SSL_ONLY(ssl)))
         goto end;
 
-    if (!TEST_ptr(localctx = OSSL_LIB_CTX_new())
-        || !TEST_true(OSSL_PROVIDER_add_builtin(localctx,
-            "tls-provider-conflicting", tls_provider_init))
-        || !TEST_ptr(localdef = OSSL_PROVIDER_load(localctx, "default"))
-        || !TEST_ptr(localtls = tls_provider_load(localctx,
-                         "tls-provider-conflicting", "valid-conflicting"))
-        || !TEST_true(EVP_set_default_properties(localctx,
-            "?provider=tls-provider"))
+    if (!TEST_true(tls_provider_libctx_new(&localctx, &localdef, &localtls,
+            "tls-provider-conflicting", "valid-conflicting", "?provider=tls-provider"))
         || !TEST_ptr(foreign = SSL_CTX_new_ex(localctx, NULL, TLS_method()))
         || !TEST_ptr(foreign_suite = ossl_ssl_get0_provider_cipher_by_name(foreign,
                          TLS_TEST_SHA256_NAME))
@@ -1412,9 +1368,7 @@ end:
     SSL_free(ssl);
     SSL_CTX_free(initial);
     SSL_CTX_free(foreign);
-    OSSL_PROVIDER_unload(localtls);
-    OSSL_PROVIDER_unload(localdef);
-    OSSL_LIB_CTX_free(localctx);
+    tls_provider_libctx_free(localctx, localdef, localtls);
     ERR_clear_error();
     return ret;
 }
@@ -1770,14 +1724,8 @@ static int test_provider_unload_lifetime(void)
     size_t written = 0, readbytes = 0;
     int ret = 0;
 
-    if (!TEST_ptr(localctx = OSSL_LIB_CTX_new())
-        || !TEST_true(OSSL_PROVIDER_add_builtin(localctx,
-            "tls-provider-unload", tls_provider_init))
-        || !TEST_ptr(localdef = OSSL_PROVIDER_load(localctx, "default"))
-        || !TEST_ptr(localtls = tls_provider_load(localctx,
-                         "tls-provider-unload", "valid"))
-        || !TEST_true(EVP_set_default_properties(localctx,
-            "?provider=tls-provider"))
+    if (!TEST_true(tls_provider_libctx_new(&localctx, &localdef, &localtls,
+            "tls-provider-unload", "valid", "?provider=tls-provider"))
         || !TEST_true(create_ssl_ctx_pair(localctx, TLS_server_method(),
             TLS_client_method(), TLS1_3_VERSION, TLS1_3_VERSION,
             &sctx, &cctx, cert, privkey))
@@ -1811,9 +1759,7 @@ end:
     SSL_free(clientssl);
     SSL_CTX_free(sctx);
     SSL_CTX_free(cctx);
-    OSSL_PROVIDER_unload(localtls);
-    OSSL_PROVIDER_unload(localdef);
-    OSSL_LIB_CTX_free(localctx);
+    tls_provider_libctx_free(localctx, localdef, localtls);
     ERR_clear_error();
     return ret;
 }
@@ -1847,9 +1793,7 @@ static int test_late_provider_load_not_discovered(void)
 end:
     SSL_CTX_free(before);
     SSL_CTX_free(after);
-    OSSL_PROVIDER_unload(localtls);
-    OSSL_PROVIDER_unload(localdef);
-    OSSL_LIB_CTX_free(localctx);
+    tls_provider_libctx_free(localctx, localdef, localtls);
     ERR_clear_error();
     return ret;
 }
@@ -1861,14 +1805,8 @@ int setup_tests(void)
     if (!test_skip_common_options()
         || !TEST_ptr(cert = test_get_argument(0))
         || !TEST_ptr(privkey = test_get_argument(1))
-        || !TEST_ptr(libctx = OSSL_LIB_CTX_new())
-        || !TEST_true(OSSL_PROVIDER_add_builtin(libctx, "tls-provider",
-            tls_provider_init))
-        || !TEST_ptr(defprov = OSSL_PROVIDER_load(libctx, "default"))
-        || !TEST_ptr(tlsprov = tls_provider_load(libctx, "tls-provider",
-                         "valid-both"))
-        || !TEST_true(EVP_set_default_properties(libctx,
-            "?provider=tls-provider")))
+        || !TEST_true(tls_provider_libctx_new(&libctx, &defprov, &tlsprov,
+            "tls-provider", "valid-both", "?provider=tls-provider")))
         return 0;
 
     ADD_TEST(test_provider_aead_kat);
@@ -1907,8 +1845,5 @@ int setup_tests(void)
 void cleanup_tests(void)
 {
     BIO_meth_free(corrupt_filter_method);
-    if (tlsprov != NULL)
-        OSSL_PROVIDER_unload(tlsprov);
-    OSSL_PROVIDER_unload(defprov);
-    OSSL_LIB_CTX_free(libctx);
+    tls_provider_libctx_free(libctx, defprov, tlsprov);
 }

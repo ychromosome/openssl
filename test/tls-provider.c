@@ -1108,6 +1108,109 @@ static const struct {
     { "embedded-nul-name", "TLS\0X", sizeof("TLS\0X") - 1 }
 };
 
+/* Algorithm substitutions share the normal UTF8_STRING representation. */
+static const struct {
+    const char *mode;
+    size_t param_index;
+    const char *name;
+} ciphersuite_algorithm_modes[] = {
+    { "valid-limit", TLS_CIPHERSUITE_AEAD_PARAM, TLS_TEST_LIMITED_AEAD128_NAME },
+    { "non-aead", TLS_CIPHERSUITE_AEAD_PARAM, "AES-128-ECB" },
+    { "ccm", TLS_CIPHERSUITE_AEAD_PARAM, "AES-128-CCM" },
+    { "unavailable-aead", TLS_CIPHERSUITE_AEAD_PARAM, "TLS-TEST-NO-SUCH-AEAD" },
+    { "unavailable-digest", TLS_CIPHERSUITE_DIGEST_PARAM, "TLS-TEST-NO-SUCH-DIGEST" },
+    { "oversized-key", TLS_CIPHERSUITE_AEAD_PARAM, TLS_TEST_OVERSIZED_AEAD_NAME },
+    { "bad-digest", TLS_CIPHERSUITE_DIGEST_PARAM, "SHA2-512" },
+    { "oversized-digest", TLS_CIPHERSUITE_DIGEST_PARAM, TLS_TEST_OVERSIZED_DIGEST_NAME },
+    { "oversized-digest-sha384", TLS_CIPHERSUITE_DIGEST_PARAM, TLS_TEST_OVERSIZED_DIGEST_NAME }
+};
+
+/* Values are literal, including zero; malformed representations are separate. */
+static const struct {
+    const char *mode;
+    size_t param_index;
+    unsigned int value;
+} ciphersuite_uint_modes[] = {
+    { "zero-codepoint", TLS_CIPHERSUITE_CODEPOINT_PARAM, 0 },
+    { "non-private-codepoint", TLS_CIPHERSUITE_CODEPOINT_PARAM, 0xfea0 },
+    { "grease-codepoint", TLS_CIPHERSUITE_CODEPOINT_PARAM, 0x0a0a },
+    { "builtin-codepoint", TLS_CIPHERSUITE_CODEPOINT_PARAM, 0x1301 },
+    { "bad-tag-length", TLS_CIPHERSUITE_TAGLEN_PARAM, EVP_GCM_TLS_TAG_LEN - 1 },
+    { "low-security", TLS_CIPHERSUITE_SECBITS_PARAM, 64 },
+    { "excess-security", TLS_CIPHERSUITE_SECBITS_PARAM, 256 }
+};
+
+/*
+ * Describe normal profiles and callback sequences. Omitted fields retain the
+ * base profile. Zero-valued scalars and malformed parameters are tested by the
+ * separate tables above, where zero never means "use the default".
+ */
+static const struct {
+    const char *mode;
+    const char *name;
+    unsigned int codepoint;
+    const char *aead;
+    const char *digest;
+    unsigned int secbits;
+    int emit_base; /* Emit the unmodified descriptor before the described one. */
+    int abort_after; /* Return failure after the callback, even if accepted. */
+} ciphersuite_sequence_modes[] = {
+    { .mode = "valid" },
+    { .mode = "valid-composed", .name = "TLS_TEST_COMPOSED_AES_128_GCM_SHA256", .aead = "AES-128-GCM", .digest = "SHA2-256" },
+    { .mode = "valid-sha384", .name = "TLS_TEST_PROVIDER_AES_256_GCM_SHA384", .codepoint = 0xffa2, .aead = TLS_TEST_AEAD256_NAME, .digest = TLS_TEST_SHA384_NAME, .secbits = 256 },
+    { .mode = "valid-both", .name = "TLS_TEST_PROVIDER_AES_256_GCM_SHA384", .codepoint = 0xffa2, .aead = TLS_TEST_AEAD256_NAME, .digest = TLS_TEST_SHA384_NAME, .secbits = 256, .emit_base = 1 },
+    { .mode = "valid-conflicting", .aead = TLS_TEST_AEAD256_NAME, .digest = TLS_TEST_SHA384_NAME, .secbits = 256 },
+    { .mode = "valid-two", .name = "TLS_TEST_PROVIDER_AES_128_GCM_SHA256_B", .codepoint = 0xffa1, .emit_base = 1 },
+    { .mode = "duplicate-descriptor", .emit_base = 1 },
+    { .mode = "duplicate-codepoint",
+        .name = "TLS_TEST_PROVIDER_AES_128_GCM_SHA256_B",
+        .emit_base = 1 },
+    { .mode = "duplicate-name", .name = "tls_test_provider_aes_128_gcm_sha256", .codepoint = 0xffa1, .emit_base = 1 },
+    { .mode = "valid-then-invalid",
+        .name = "TLS_TEST_PROVIDER_AES_128_GCM_SHA256_B",
+        .codepoint = 0xffa1,
+        .digest = "SHA2-512",
+        .emit_base = 1 },
+    { .mode = "valid-then-abort", .abort_after = 1 }
+};
+
+/**
+ * @brief Apply ordinary profile substitutions and emit a callback sequence.
+ * @param index Entry in ciphersuite_sequence_modes.
+ * @param params Mutable copy of the base descriptor.
+ * @param cb Descriptor consumer.
+ * @param arg Opaque consumer argument.
+ * @returns Callback result, or 0 for a requested outer abort.
+ */
+static int tls_ciphersuite_emit_sequence(size_t index, OSSL_PARAM params[],
+    OSSL_CALLBACK *cb, void *arg)
+{
+    unsigned int codepoint = ciphersuite_sequence_modes[index].codepoint;
+    unsigned int secbits = ciphersuite_sequence_modes[index].secbits;
+    const char *name = ciphersuite_sequence_modes[index].name;
+    const char *aead = ciphersuite_sequence_modes[index].aead;
+    const char *digest = ciphersuite_sequence_modes[index].digest;
+    int ret;
+
+    if (ciphersuite_sequence_modes[index].emit_base && cb(params, arg) == 0)
+        return 0;
+    if (name != NULL)
+        params[TLS_CIPHERSUITE_NAME_PARAM] = OSSL_PARAM_construct_utf8_string(
+            OSSL_CAPABILITY_TLS_CIPHERSUITE_NAME, (char *)name, strlen(name) + 1);
+    if (codepoint != 0)
+        params[TLS_CIPHERSUITE_CODEPOINT_PARAM].data = &codepoint;
+    if (aead != NULL)
+        params[TLS_CIPHERSUITE_AEAD_PARAM] = OSSL_PARAM_construct_utf8_string(
+            OSSL_CAPABILITY_TLS_CIPHERSUITE_AEAD, (char *)aead, strlen(aead) + 1);
+    if (digest != NULL)
+        params[TLS_CIPHERSUITE_DIGEST_PARAM] = OSSL_PARAM_construct_utf8_string(
+            OSSL_CAPABILITY_TLS_CIPHERSUITE_DIGEST, (char *)digest, strlen(digest) + 1);
+    if (secbits != 0)
+        params[TLS_CIPHERSUITE_SECBITS_PARAM].data = &secbits;
+    ret = cb(params, arg);
+    return ciphersuite_sequence_modes[index].abort_after ? 0 : ret;
+}
+
 /**
  * @brief Emit the descriptor or callback sequence selected by a test mode.
  * @param pctx Provider context holding the requested mode.
@@ -1118,67 +1221,80 @@ static const struct {
 static int tls_prov_get_ciphersuites(PROV_XOR_CTX *pctx,
     OSSL_CALLBACK *cb, void *arg)
 {
-    const char *tls_ciphersuite_mode = pctx->tls_ciphersuite_mode;
+    const char *mode = pctx->tls_ciphersuite_mode;
     OSSL_PARAM params[OSSL_NELEM(tls_ciphersuite_params) + 1];
-    char second_name[] = "TLS_TEST_PROVIDER_AES_128_GCM_SHA256_B";
-    char duplicate_name[] = "tls_test_provider_aes_128_gcm_sha256";
-    char many_name[64];
-    char composed_name[] = "TLS_TEST_COMPOSED_AES_128_GCM_SHA256";
-    char one_byte_name = 'X';
-    char max_name[256];
-    char overlong_name[257];
-    char max_algorithm_name[256];
-    char overlong_algorithm_name[257];
-    char composed_aead[] = "AES-128-GCM";
-    char composed_digest[] = "SHA2-256";
-    char non_aead[] = "AES-128-ECB";
-    char ccm[] = "AES-128-CCM";
-    char unavailable[] = "TLS-TEST-NO-SUCH-AEAD";
-    char unavailable_digest[] = "TLS-TEST-NO-SUCH-DIGEST";
-    char oversized[] = TLS_TEST_OVERSIZED_AEAD_NAME;
-    char limited_aes128[] = TLS_TEST_LIMITED_AEAD128_NAME;
-    char bad_digest[] = "SHA2-512";
-    char oversized_digest[] = TLS_TEST_OVERSIZED_DIGEST_NAME;
-    char sha384_name[] = "TLS_TEST_PROVIDER_AES_256_GCM_SHA384";
-    char aes256_gcm[] = TLS_TEST_AEAD256_NAME;
-    char sha384[] = TLS_TEST_SHA384_NAME;
-    unsigned int second_codepoint = 0xffa1;
-    unsigned int sha384_codepoint = 0xffa2;
-    unsigned int sha384_secbits = 256;
-    unsigned int bad_codepoint, bad_secbits, bad_taglen, many_codepoint;
+    char max_name[256], overlong_name[257], many_name[64], one_byte_name = 'X';
     unsigned char one_byte_uint = 1;
+    unsigned int value;
     size_t j;
-    int i, ret;
+    int i, count;
+    /* Exact data sizes exercise the stricter capability string contract. */
+    const struct {
+        const char *mode;
+        size_t param_index;
+        const char *data;
+        size_t data_size;
+    } string_size_modes[] = {
+        { "unterminated-name", TLS_CIPHERSUITE_NAME_PARAM,
+            tls_ciphersuite_name, sizeof(tls_ciphersuite_name) - 1 },
+        { "unterminated-max-name", TLS_CIPHERSUITE_NAME_PARAM,
+            overlong_name, sizeof(overlong_name) - 1 },
+        { "max-name", TLS_CIPHERSUITE_NAME_PARAM, max_name, sizeof(max_name) },
+        { "overlong-name", TLS_CIPHERSUITE_NAME_PARAM, overlong_name, sizeof(overlong_name) },
+        { "null-name-data", TLS_CIPHERSUITE_NAME_PARAM, NULL, sizeof(tls_ciphersuite_name) },
+        { "zero-name-size", TLS_CIPHERSUITE_NAME_PARAM, tls_ciphersuite_name, 0 },
+        { "oversized-name-size", TLS_CIPHERSUITE_NAME_PARAM, &one_byte_name, SIZE_MAX },
+        { "max-aead-name", TLS_CIPHERSUITE_AEAD_PARAM, max_name, sizeof(max_name) },
+        { "overlong-aead-name", TLS_CIPHERSUITE_AEAD_PARAM, overlong_name, sizeof(overlong_name) },
+        { "max-digest-name", TLS_CIPHERSUITE_DIGEST_PARAM, max_name, sizeof(max_name) },
+        { "overlong-digest-name", TLS_CIPHERSUITE_DIGEST_PARAM, overlong_name, sizeof(overlong_name) }
+    };
 
-    if (tls_ciphersuite_mode == NULL
-        || strcmp(tls_ciphersuite_mode, "unsupported") == 0)
+    if (mode == NULL || strcmp(mode, "unsupported") == 0)
         return 0;
-    if (strcmp(tls_ciphersuite_mode, "empty") == 0)
+    if (strcmp(mode, "empty") == 0)
         return 1;
+    if (strcmp(mode, "capability-error") == 0) {
+        ERR_raise(ERR_LIB_USER, ERR_R_INTERNAL_ERROR);
+        return 0;
+    }
 
     memcpy(params, tls_ciphersuite_params, sizeof(tls_ciphersuite_params));
-
     for (j = 0; j < OSSL_NELEM(ciphersuite_name_modes); j++) {
-        if (strcmp(tls_ciphersuite_mode, ciphersuite_name_modes[j].mode) == 0) {
+        if (strcmp(mode, ciphersuite_name_modes[j].mode) == 0) {
             params[TLS_CIPHERSUITE_NAME_PARAM].data = (void *)ciphersuite_name_modes[j].value;
             params[TLS_CIPHERSUITE_NAME_PARAM].data_size = ciphersuite_name_modes[j].value_len;
             return cb(params, arg);
         }
     }
 
-    memset(max_name, 'A', sizeof(max_name));
+    for (j = 0; j < OSSL_NELEM(ciphersuite_algorithm_modes); j++) {
+        if (strcmp(mode, ciphersuite_algorithm_modes[j].mode) == 0) {
+            OSSL_PARAM *param = &params[ciphersuite_algorithm_modes[j].param_index];
+            const char *name = ciphersuite_algorithm_modes[j].name;
+
+            *param = OSSL_PARAM_construct_utf8_string(param->key,
+                (char *)name, strlen(name) + 1);
+            return cb(params, arg);
+        }
+    }
+
+    memset(max_name, 'A', sizeof(max_name) - 1);
     max_name[sizeof(max_name) - 1] = '\0';
-    memset(overlong_name, 'A', sizeof(overlong_name));
+    memset(overlong_name, 'A', sizeof(overlong_name) - 1);
     overlong_name[sizeof(overlong_name) - 1] = '\0';
-    memset(max_algorithm_name, 'A', sizeof(max_algorithm_name));
-    max_algorithm_name[sizeof(max_algorithm_name) - 1] = '\0';
-    memset(overlong_algorithm_name, 'A', sizeof(overlong_algorithm_name));
-    overlong_algorithm_name[sizeof(overlong_algorithm_name) - 1] = '\0';
+    for (j = 0; j < OSSL_NELEM(string_size_modes); j++) {
+        if (strcmp(mode, string_size_modes[j].mode) == 0) {
+            params[string_size_modes[j].param_index].data = (void *)string_size_modes[j].data;
+            params[string_size_modes[j].param_index].data_size = string_size_modes[j].data_size;
+            return cb(params, arg);
+        }
+    }
 
     for (j = 0; j < OSSL_NELEM(malformed_uint_modes); j++) {
         OSSL_PARAM *param;
 
-        if (strcmp(tls_ciphersuite_mode, malformed_uint_modes[j].mode) != 0)
+        if (strcmp(mode, malformed_uint_modes[j].mode) != 0)
             continue;
         param = &params[malformed_uint_modes[j].param_index];
         switch (malformed_uint_modes[j].kind) {
@@ -1199,217 +1315,46 @@ static int tls_prov_get_ciphersuites(PROV_XOR_CTX *pctx,
         return cb(params, arg);
     }
 
-    if (strcmp(tls_ciphersuite_mode, "valid") == 0)
-        return cb(params, arg);
-    if (strcmp(tls_ciphersuite_mode, "capability-error") == 0) {
-        ERR_raise(ERR_LIB_USER, ERR_R_INTERNAL_ERROR);
-        return 0;
+    for (j = 0; j < OSSL_NELEM(ciphersuite_uint_modes); j++) {
+        if (strcmp(mode, ciphersuite_uint_modes[j].mode) == 0) {
+            value = ciphersuite_uint_modes[j].value;
+            params[ciphersuite_uint_modes[j].param_index].data = &value;
+            return cb(params, arg);
+        }
     }
-    if (strcmp(tls_ciphersuite_mode, "valid-limit") == 0) {
-        params[TLS_CIPHERSUITE_AEAD_PARAM].data = limited_aes128;
-        params[TLS_CIPHERSUITE_AEAD_PARAM].data_size
-            = sizeof(limited_aes128);
-        return cb(params, arg);
-    }
-    if (strcmp(tls_ciphersuite_mode, "valid-composed") == 0) {
-        params[TLS_CIPHERSUITE_NAME_PARAM].data = composed_name;
-        params[TLS_CIPHERSUITE_NAME_PARAM].data_size = sizeof(composed_name);
-        params[TLS_CIPHERSUITE_AEAD_PARAM].data = composed_aead;
-        params[TLS_CIPHERSUITE_AEAD_PARAM].data_size = sizeof(composed_aead);
-        params[TLS_CIPHERSUITE_DIGEST_PARAM].data = composed_digest;
-        params[TLS_CIPHERSUITE_DIGEST_PARAM].data_size = sizeof(composed_digest);
-        return cb(params, arg);
-    }
-    if (strcmp(tls_ciphersuite_mode, "valid-both") == 0 && cb(params, arg) == 0)
-        return 0;
-    if (strcmp(tls_ciphersuite_mode, "valid-sha384") == 0
-        || strcmp(tls_ciphersuite_mode, "valid-both") == 0) {
-        params[TLS_CIPHERSUITE_NAME_PARAM].data = sha384_name;
-        params[TLS_CIPHERSUITE_NAME_PARAM].data_size = sizeof(sha384_name);
-        params[TLS_CIPHERSUITE_CODEPOINT_PARAM].data = &sha384_codepoint;
-        params[TLS_CIPHERSUITE_AEAD_PARAM].data = aes256_gcm;
-        params[TLS_CIPHERSUITE_AEAD_PARAM].data_size = sizeof(aes256_gcm);
-        params[TLS_CIPHERSUITE_DIGEST_PARAM].data = sha384;
-        params[TLS_CIPHERSUITE_DIGEST_PARAM].data_size = sizeof(sha384);
-        params[TLS_CIPHERSUITE_SECBITS_PARAM].data = &sha384_secbits;
-        return cb(params, arg);
-    }
-    if (strcmp(tls_ciphersuite_mode, "valid-conflicting") == 0) {
-        params[TLS_CIPHERSUITE_AEAD_PARAM].data = aes256_gcm;
-        params[TLS_CIPHERSUITE_AEAD_PARAM].data_size = sizeof(aes256_gcm);
-        params[TLS_CIPHERSUITE_DIGEST_PARAM].data = sha384;
-        params[TLS_CIPHERSUITE_DIGEST_PARAM].data_size = sizeof(sha384);
-        params[TLS_CIPHERSUITE_SECBITS_PARAM].data = &sha384_secbits;
-        return cb(params, arg);
-    }
-    if (strcmp(tls_ciphersuite_mode, "valid-unknown-param") == 0) {
-        params[TLS_CIPHERSUITE_END_PARAM] = OSSL_PARAM_construct_utf8_string("tls-test-optional",
-            tls_ciphersuite_name, 0);
-        params[TLS_CIPHERSUITE_END_PARAM + 1] = OSSL_PARAM_construct_end();
-        return cb(params, arg);
-    }
-    if (strcmp(tls_ciphersuite_mode, "valid-two") == 0) {
-        ret = cb(params, arg);
-        if (ret == 0)
-            return 0;
-        params[TLS_CIPHERSUITE_NAME_PARAM].data = second_name;
-        params[TLS_CIPHERSUITE_NAME_PARAM].data_size = sizeof(second_name);
-        params[TLS_CIPHERSUITE_CODEPOINT_PARAM].data = &second_codepoint;
-        return cb(params, arg);
-    }
-    if (strcmp(tls_ciphersuite_mode, "valid-many") == 0
-        || strcmp(tls_ciphersuite_mode, "too-many") == 0) {
-        int count = strcmp(tls_ciphersuite_mode, "too-many") == 0
-            ? TLS_TEST_MANY_COUNT + 1
-            : TLS_TEST_MANY_COUNT;
 
+    for (j = 0; j < OSSL_NELEM(ciphersuite_sequence_modes); j++)
+        if (strcmp(mode, ciphersuite_sequence_modes[j].mode) == 0)
+            return tls_ciphersuite_emit_sequence(j, params, cb, arg);
+
+    if (strcmp(mode, "valid-many") == 0 || strcmp(mode, "too-many") == 0) {
+        count = TLS_TEST_MANY_COUNT + (strcmp(mode, "too-many") == 0);
         for (i = 0; i < count; i++) {
-            snprintf(many_name, sizeof(many_name),
-                "TLS_TEST_PROVIDER_INDEX_%03d", i);
-            many_codepoint = 0xff00U + TLS_TEST_MANY_COUNT - 1U
-                - (unsigned int)i;
+            snprintf(many_name, sizeof(many_name), "TLS_TEST_PROVIDER_INDEX_%03d", i);
+            value = 0xff00U + TLS_TEST_MANY_COUNT - 1U - (unsigned int)i;
             params[TLS_CIPHERSUITE_NAME_PARAM].data = many_name;
-            params[TLS_CIPHERSUITE_NAME_PARAM].data_size
-                = strlen(many_name) + 1;
-            params[TLS_CIPHERSUITE_CODEPOINT_PARAM].data = &many_codepoint;
+            params[TLS_CIPHERSUITE_NAME_PARAM].data_size = strlen(many_name) + 1;
+            params[TLS_CIPHERSUITE_CODEPOINT_PARAM].data = &value;
             if (cb(params, arg) == 0)
                 return 0;
         }
         return 1;
     }
-    if (strcmp(tls_ciphersuite_mode, "unterminated-name") == 0) {
-        params[TLS_CIPHERSUITE_NAME_PARAM].data_size
-            = strlen(tls_ciphersuite_name);
-    } else if (strcmp(tls_ciphersuite_mode, "unterminated-max-name") == 0) {
-        params[TLS_CIPHERSUITE_NAME_PARAM].data = overlong_name;
-        params[TLS_CIPHERSUITE_NAME_PARAM].data_size
-            = sizeof(overlong_name) - 1;
-    } else if (strcmp(tls_ciphersuite_mode, "max-name") == 0) {
-        params[TLS_CIPHERSUITE_NAME_PARAM].data = max_name;
-        params[TLS_CIPHERSUITE_NAME_PARAM].data_size = sizeof(max_name);
-    } else if (strcmp(tls_ciphersuite_mode, "overlong-name") == 0) {
-        params[TLS_CIPHERSUITE_NAME_PARAM].data = overlong_name;
-        params[TLS_CIPHERSUITE_NAME_PARAM].data_size = sizeof(overlong_name);
-    } else if (strcmp(tls_ciphersuite_mode, "null-name-data") == 0) {
-        params[TLS_CIPHERSUITE_NAME_PARAM].data = NULL;
-    } else if (strcmp(tls_ciphersuite_mode, "zero-name-size") == 0) {
-        params[TLS_CIPHERSUITE_NAME_PARAM].data_size = 0;
-    } else if (strcmp(tls_ciphersuite_mode, "oversized-name-size") == 0) {
-        params[TLS_CIPHERSUITE_NAME_PARAM].data = &one_byte_name;
-        params[TLS_CIPHERSUITE_NAME_PARAM].data_size = SIZE_MAX;
-    } else if (strcmp(tls_ciphersuite_mode, "max-aead-name") == 0
-        || strcmp(tls_ciphersuite_mode, "overlong-aead-name") == 0) {
-        params[TLS_CIPHERSUITE_AEAD_PARAM].data
-            = strcmp(tls_ciphersuite_mode, "max-aead-name") == 0
-            ? max_algorithm_name
-            : overlong_algorithm_name;
-        params[TLS_CIPHERSUITE_AEAD_PARAM].data_size
-            = strcmp(tls_ciphersuite_mode, "max-aead-name") == 0
-            ? sizeof(max_algorithm_name)
-            : sizeof(overlong_algorithm_name);
-    } else if (strcmp(tls_ciphersuite_mode, "max-digest-name") == 0
-        || strcmp(tls_ciphersuite_mode, "overlong-digest-name") == 0) {
-        params[TLS_CIPHERSUITE_DIGEST_PARAM].data
-            = strcmp(tls_ciphersuite_mode, "max-digest-name") == 0
-            ? max_algorithm_name
-            : overlong_algorithm_name;
-        params[TLS_CIPHERSUITE_DIGEST_PARAM].data_size
-            = strcmp(tls_ciphersuite_mode, "max-digest-name") == 0
-            ? sizeof(max_algorithm_name)
-            : sizeof(overlong_algorithm_name);
-    } else if (strcmp(tls_ciphersuite_mode,
-                   "unterminated-algorithm-names")
-        == 0) {
-        params[TLS_CIPHERSUITE_AEAD_PARAM].data_size
-            = strlen(tls_ciphersuite_aead);
-        params[TLS_CIPHERSUITE_DIGEST_PARAM].data_size
-            = strlen(tls_ciphersuite_digest);
-    } else if (strcmp(tls_ciphersuite_mode, "zero-codepoint") == 0
-        || strcmp(tls_ciphersuite_mode, "non-private-codepoint") == 0
-        || strcmp(tls_ciphersuite_mode, "grease-codepoint") == 0
-        || strcmp(tls_ciphersuite_mode, "builtin-codepoint") == 0) {
-        if (strcmp(tls_ciphersuite_mode, "zero-codepoint") == 0)
-            bad_codepoint = 0;
-        else if (strcmp(tls_ciphersuite_mode, "non-private-codepoint")
-            == 0)
-            bad_codepoint = 0xfea0;
-        else if (strcmp(tls_ciphersuite_mode, "grease-codepoint") == 0)
-            bad_codepoint = 0x0a0a;
-        else
-            bad_codepoint = 0x1301;
-        params[TLS_CIPHERSUITE_CODEPOINT_PARAM].data = &bad_codepoint;
-    } else if (strcmp(tls_ciphersuite_mode, "non-aead") == 0) {
-        params[TLS_CIPHERSUITE_AEAD_PARAM].data = non_aead;
-        params[TLS_CIPHERSUITE_AEAD_PARAM].data_size = sizeof(non_aead);
-    } else if (strcmp(tls_ciphersuite_mode, "ccm") == 0) {
-        params[TLS_CIPHERSUITE_AEAD_PARAM].data = ccm;
-        params[TLS_CIPHERSUITE_AEAD_PARAM].data_size = sizeof(ccm);
-    } else if (strcmp(tls_ciphersuite_mode, "unavailable-aead") == 0) {
-        params[TLS_CIPHERSUITE_AEAD_PARAM].data = unavailable;
-        params[TLS_CIPHERSUITE_AEAD_PARAM].data_size = sizeof(unavailable);
-    } else if (strcmp(tls_ciphersuite_mode, "unavailable-digest") == 0) {
-        params[TLS_CIPHERSUITE_DIGEST_PARAM].data = unavailable_digest;
-        params[TLS_CIPHERSUITE_DIGEST_PARAM].data_size = sizeof(unavailable_digest);
-    } else if (strcmp(tls_ciphersuite_mode, "oversized-key") == 0) {
-        params[TLS_CIPHERSUITE_AEAD_PARAM].data = oversized;
-        params[TLS_CIPHERSUITE_AEAD_PARAM].data_size = sizeof(oversized);
-    } else if (strcmp(tls_ciphersuite_mode, "bad-digest") == 0) {
-        params[TLS_CIPHERSUITE_DIGEST_PARAM].data = bad_digest;
-        params[TLS_CIPHERSUITE_DIGEST_PARAM].data_size = sizeof(bad_digest);
-    } else if (strcmp(tls_ciphersuite_mode, "oversized-digest") == 0
-        || strcmp(tls_ciphersuite_mode, "oversized-digest-sha384") == 0) {
-        params[TLS_CIPHERSUITE_DIGEST_PARAM].data = oversized_digest;
-        params[TLS_CIPHERSUITE_DIGEST_PARAM].data_size
-            = sizeof(oversized_digest);
-    } else if (strcmp(tls_ciphersuite_mode, "bad-tag-length") == 0) {
-        bad_taglen = EVP_GCM_TLS_TAG_LEN - 1;
-        params[TLS_CIPHERSUITE_TAGLEN_PARAM].data = &bad_taglen;
-    } else if (strcmp(tls_ciphersuite_mode, "low-security") == 0
-        || strcmp(tls_ciphersuite_mode, "excess-security") == 0) {
-        bad_secbits = strcmp(tls_ciphersuite_mode, "low-security") == 0
-            ? 64
-            : 256;
-        params[TLS_CIPHERSUITE_SECBITS_PARAM].data = &bad_secbits;
-    } else if (strcmp(tls_ciphersuite_mode, "missing-param") == 0) {
+
+    if (strcmp(mode, "valid-unknown-param") == 0) {
+        params[TLS_CIPHERSUITE_END_PARAM] = OSSL_PARAM_construct_utf8_string(
+            "tls-test-optional", tls_ciphersuite_name, 0);
+        params[TLS_CIPHERSUITE_END_PARAM + 1] = OSSL_PARAM_construct_end();
+    } else if (strcmp(mode, "unterminated-algorithm-names") == 0) {
+        params[TLS_CIPHERSUITE_AEAD_PARAM].data_size = sizeof(tls_ciphersuite_aead) - 1;
+        params[TLS_CIPHERSUITE_DIGEST_PARAM].data_size = sizeof(tls_ciphersuite_digest) - 1;
+    } else if (strcmp(mode, "missing-param") == 0) {
         params[TLS_CIPHERSUITE_SECBITS_PARAM].key = "tls-test-optional";
-    } else if (strcmp(tls_ciphersuite_mode, "wrong-type") == 0) {
+    } else if (strcmp(mode, "wrong-type") == 0) {
         params[TLS_CIPHERSUITE_NAME_PARAM].data_type = OSSL_PARAM_OCTET_STRING;
-    } else if (strcmp(tls_ciphersuite_mode, "duplicate-descriptor") == 0) {
-        ret = cb(params, arg);
-        return ret == 0 ? 0 : cb(params, arg);
-    } else if (strcmp(tls_ciphersuite_mode, "duplicate-codepoint") == 0) {
-        ret = cb(params, arg);
-        if (ret == 0)
-            return 0;
-        params[TLS_CIPHERSUITE_NAME_PARAM].data = second_name;
-        params[TLS_CIPHERSUITE_NAME_PARAM].data_size = sizeof(second_name);
-        return cb(params, arg);
-    } else if (strcmp(tls_ciphersuite_mode, "duplicate-name") == 0) {
-        ret = cb(params, arg);
-        if (ret == 0)
-            return 0;
-        params[TLS_CIPHERSUITE_NAME_PARAM].data = duplicate_name;
-        params[TLS_CIPHERSUITE_NAME_PARAM].data_size = sizeof(duplicate_name);
-        params[TLS_CIPHERSUITE_CODEPOINT_PARAM].data = &second_codepoint;
-        return cb(params, arg);
-    } else if (strcmp(tls_ciphersuite_mode, "valid-then-invalid") == 0) {
-        ret = cb(params, arg);
-        if (ret == 0)
-            return 0;
-        params[TLS_CIPHERSUITE_NAME_PARAM].data = second_name;
-        params[TLS_CIPHERSUITE_NAME_PARAM].data_size = sizeof(second_name);
-        params[TLS_CIPHERSUITE_CODEPOINT_PARAM].data = &second_codepoint;
-        params[TLS_CIPHERSUITE_DIGEST_PARAM].data = bad_digest;
-        params[TLS_CIPHERSUITE_DIGEST_PARAM].data_size = sizeof(bad_digest);
-        return cb(params, arg);
-    } else if (strcmp(tls_ciphersuite_mode, "valid-then-abort") == 0) {
-        if (cb(params, arg) == 0)
-            return 0;
-        return 0;
     } else {
         return 0;
     }
-
     return cb(params, arg);
 }
 

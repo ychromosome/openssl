@@ -5000,18 +5000,16 @@ const SSL_CIPHER *ssl3_choose_cipher(SSL_CONNECTION *s, STACK_OF(SSL_CIPHER) *cl
             }
 
             if (prefer_sha256) {
-                const SSL_CIPHER *tmp = canonical;
-                const EVP_MD *md;
-
-                md = ossl_ssl_cipher_get0_md(SSL_CONNECTION_GET_CTX(s), tmp);
+                const EVP_MD *md = ossl_ssl_cipher_get0_md(
+                    SSL_CONNECTION_GET_CTX(s), canonical);
 
                 if (md != NULL
                     && EVP_MD_is_a(md, OSSL_DIGEST_NAME_SHA2_256)) {
-                    ret = tmp;
+                    ret = canonical;
                     break;
                 }
                 if (ret == NULL)
-                    ret = tmp;
+                    ret = canonical;
                 continue;
             }
             ret = canonical;
