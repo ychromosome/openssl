@@ -4725,7 +4725,7 @@ const SSL_CIPHER *ssl3_get_cipher_by_id(uint32_t id)
     return OBJ_bsearch_ssl_cipher_id(&c, ssl3_scsvs, SSL3_NUM_SCSVS);
 }
 
-int ssl3_has_cipher_name(const char *name)
+int ossl_ssl_has_cipher_name(const char *name)
 {
     SSL_CIPHER *tbl;
     SSL_CIPHER *alltabs[] = { tls13_ciphers, ssl3_ciphers, ssl3_scsvs };

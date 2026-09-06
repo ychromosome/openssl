@@ -21,10 +21,7 @@
 #include "helpers/ssltestlib.h"
 #include "testutil.h"
 
-int tls_provider_init(const OSSL_CORE_HANDLE *handle,
-    const OSSL_DISPATCH *in,
-    const OSSL_DISPATCH **out,
-    void **provctx);
+#include "helpers/tls_provider.h"
 
 typedef struct {
     const char *mode;
@@ -105,17 +102,6 @@ static const CIPHERSUITE_TEST ciphersuite_tests[] = {
 static OSSL_LIB_CTX *libctx;
 static OSSL_PROVIDER *defprov, *tlsprov;
 static char *cert, *privkey;
-
-static OSSL_PROVIDER *load_tls_provider(OSSL_LIB_CTX *ctx, const char *name,
-    const char *mode)
-{
-    OSSL_PARAM params[] = {
-        OSSL_PARAM_utf8_string("tls-ciphersuite-mode", (char *)mode, 0),
-        OSSL_PARAM_END
-    };
-
-    return OSSL_PROVIDER_load_ex(ctx, name, params);
-}
 
 #define TLS_TEST_SHA256_NAME "TLS_TEST_PROVIDER_AES_128_GCM_SHA256"
 #define TLS_TEST_SHA384_NAME "TLS_TEST_PROVIDER_AES_256_GCM_SHA384"
@@ -455,7 +441,7 @@ static int test_ciphersuite_mode(int idx)
         || !TEST_true(OSSL_PROVIDER_add_builtin(localctx, "tls-provider-mode",
             tls_provider_init))
         || !TEST_ptr(localdef = OSSL_PROVIDER_load(localctx, "default"))
-        || !TEST_ptr(localtls = load_tls_provider(localctx,
+        || !TEST_ptr(localtls = tls_provider_load(localctx,
                          "tls-provider-mode", test->mode))
         || !TEST_true(EVP_set_default_properties(localctx,
             "?provider=tls-provider")))
@@ -526,7 +512,7 @@ static int test_provider_registry_indexes(void)
         || !TEST_true(OSSL_PROVIDER_add_builtin(localctx,
             "tls-provider-many", tls_provider_init))
         || !TEST_ptr(localdef = OSSL_PROVIDER_load(localctx, "default"))
-        || !TEST_ptr(localtls = load_tls_provider(localctx,
+        || !TEST_ptr(localtls = tls_provider_load(localctx,
                          "tls-provider-many", "valid-many"))
         || !TEST_true(EVP_set_default_properties(localctx,
             "?provider=tls-provider"))
@@ -545,27 +531,27 @@ static int test_provider_registry_indexes(void)
         id = SSL3_CK_CIPHERSUITE_FLAG | (0xff00U + (unsigned int)i);
         snprintf(name, sizeof(name), "TLS_TEST_PROVIDER_INDEX_%03d",
             TLS_TEST_MANY_COUNT - 1 - i);
-        by_id = ssl_provider_ciphersuite_by_id(ctx, id);
-        by_name = ssl_provider_ciphersuite_by_name(ctx, name);
+        by_id = ossl_ssl_get0_provider_cipher_by_id(ctx, id);
+        by_name = ossl_ssl_get0_provider_cipher_by_name(ctx, name);
         if (!TEST_ptr(by_id)
             || !TEST_ptr_eq(by_name, by_id)
             || !TEST_uint_eq(by_id->id, id))
             goto end;
     }
 
-    if (!TEST_ptr_eq(ssl_provider_ciphersuite_by_name(
+    if (!TEST_ptr_eq(ossl_ssl_get0_provider_cipher_by_name(
                          ctx, "tls_test_provider_index_064"),
-            ssl_provider_ciphersuite_by_id(ctx,
+            ossl_ssl_get0_provider_cipher_by_id(ctx,
                 SSL3_CK_CIPHERSUITE_FLAG
                     | (0xff00U + TLS_TEST_MANY_COUNT - 1U - 64U)))
-        || !TEST_ptr_null(ssl_provider_ciphersuite_by_id(ctx,
+        || !TEST_ptr_null(ossl_ssl_get0_provider_cipher_by_id(ctx,
             SSL3_CK_CIPHERSUITE_FLAG | 0xff80U))
-        || !TEST_ptr_null(ssl_provider_ciphersuite_by_name(ctx,
+        || !TEST_ptr_null(ossl_ssl_get0_provider_cipher_by_name(ctx,
             "TLS_TEST_PROVIDER_INDEX_MISSING"))
         || !TEST_ulong_eq(ERR_peek_error(), 0))
         goto end;
 
-    by_id = ssl_provider_ciphersuite_by_id(
+    by_id = ossl_ssl_get0_provider_cipher_by_id(
         ctx, SSL3_CK_CIPHERSUITE_FLAG | 0xff00U);
     if (!TEST_ptr(by_id)
         || !TEST_ptr_null(SSL_CIPHER_standard_name(by_id))
@@ -636,7 +622,7 @@ static int test_provider_composition(void)
         || !TEST_true(OSSL_PROVIDER_add_builtin(localctx,
             "tls-provider-composed", tls_provider_init))
         || !TEST_ptr(localdef = OSSL_PROVIDER_load(localctx, "default"))
-        || !TEST_ptr(localtls = load_tls_provider(localctx,
+        || !TEST_ptr(localtls = tls_provider_load(localctx,
                          "tls-provider-composed", "valid-composed"))
         || !TEST_true(EVP_set_default_properties(localctx, "provider=default"))
         || !TEST_true(create_ssl_ctx_pair(localctx, TLS_server_method(),
@@ -914,7 +900,7 @@ static int test_sni_context_switch(int idx)
         || !TEST_true(SSL_CTX_set_num_tickets(sctx, 0))
         || !TEST_true(SSL_CTX_set_ciphersuites(sctx, TLS_TEST_SHA256_NAME))
         || !TEST_true(SSL_CTX_set_ciphersuites(cctx, TLS_TEST_SHA256_NAME))
-        || !TEST_ptr(expected = ssl_provider_ciphersuite_by_id(sctx,
+        || !TEST_ptr(expected = ossl_ssl_get0_provider_cipher_by_id(sctx,
                          SSL3_CK_CIPHERSUITE_FLAG | 0xffa0U)))
         goto end;
 
@@ -1029,7 +1015,7 @@ static int test_switched_context_supported_ciphers(void)
     if (!TEST_ptr(initial = SSL_CTX_new_ex(libctx, NULL, TLS_method()))
         || !TEST_true(SSL_CTX_set_ciphersuites(initial,
             TLS_TEST_SHA256_NAME))
-        || !TEST_ptr(canonical = ssl_provider_ciphersuite_by_name(initial,
+        || !TEST_ptr(canonical = ossl_ssl_get0_provider_cipher_by_name(initial,
                          TLS_TEST_SHA256_NAME))
         || !TEST_ptr(ssl = SSL_new(initial))
         || !TEST_ptr(alternate = SSL_CTX_new_ex(libctx, "provider=default",
@@ -1274,11 +1260,11 @@ static int test_provider_descriptor_equivalence(void)
         || !TEST_ptr(other = SSL_CTX_new_ex(libctx, NULL, TLS_method()))
         || !TEST_ptr(ssl = SSL_new(ctx))
         || !TEST_ptr(sc = SSL_CONNECTION_FROM_SSL_ONLY(ssl))
-        || !TEST_ptr(canonical = ssl_provider_ciphersuite_by_name(ctx,
+        || !TEST_ptr(canonical = ossl_ssl_get0_provider_cipher_by_name(ctx,
                          TLS_TEST_SHA384_NAME))
-        || !TEST_ptr(equivalent = ssl_provider_ciphersuite_by_name(other,
+        || !TEST_ptr(equivalent = ossl_ssl_get0_provider_cipher_by_name(other,
                          TLS_TEST_SHA384_NAME))
-        || !TEST_ptr(different = ssl_provider_ciphersuite_by_name(other,
+        || !TEST_ptr(different = ossl_ssl_get0_provider_cipher_by_name(other,
                          TLS_TEST_SHA256_NAME))
         || !TEST_ptr_ne(canonical, equivalent)
         || !TEST_ptr_eq(ssl_cipher_canon(sc, equivalent), canonical))
@@ -1322,7 +1308,7 @@ static int test_ssl_dup_canonicalisation(void)
             TLS_client_method(), TLS1_3_VERSION, TLS1_3_VERSION,
             &sctx, &cctx, cert, privkey))
         || !TEST_true(SSL_CTX_set_ciphersuites(cctx, TLS_TEST_SHA256_NAME))
-        || !TEST_ptr(canonical = ssl_provider_ciphersuite_by_id(sctx,
+        || !TEST_ptr(canonical = ossl_ssl_get0_provider_cipher_by_id(sctx,
                          SSL3_CK_CIPHERSUITE_FLAG | 0xffa0U))
         || !TEST_ptr(original = SSL_new(sctx))
         || !TEST_true(SSL_set_ciphersuites(original, TLS_TEST_SHA256_NAME))
@@ -1380,12 +1366,12 @@ static int test_ssl_dup_rejects_foreign_ciphersuite(void)
         || !TEST_true(OSSL_PROVIDER_add_builtin(localctx,
             "tls-provider-conflicting", tls_provider_init))
         || !TEST_ptr(localdef = OSSL_PROVIDER_load(localctx, "default"))
-        || !TEST_ptr(localtls = load_tls_provider(localctx,
+        || !TEST_ptr(localtls = tls_provider_load(localctx,
                          "tls-provider-conflicting", "valid-conflicting"))
         || !TEST_true(EVP_set_default_properties(localctx,
             "?provider=tls-provider"))
         || !TEST_ptr(foreign = SSL_CTX_new_ex(localctx, NULL, TLS_method()))
-        || !TEST_ptr(foreign_suite = ssl_provider_ciphersuite_by_name(foreign,
+        || !TEST_ptr(foreign_suite = ossl_ssl_get0_provider_cipher_by_name(foreign,
                          TLS_TEST_SHA256_NAME))
         || !TEST_ptr(sk_SSL_CIPHER_set(sc->tls13_ciphersuites, 0,
             foreign_suite))
@@ -1485,7 +1471,7 @@ static int test_quic_exclusion(void)
         || !TEST_ptr_null(SSL_CIPHER_find(quic, wire_id))
         || !TEST_ptr(tlsctx = SSL_CTX_new_ex(libctx, NULL, TLS_method()))
         || !TEST_ptr(external = SSL_new(tlsctx))
-        || !TEST_ptr(suite = ssl_provider_ciphersuite_by_id(tlsctx,
+        || !TEST_ptr(suite = ossl_ssl_get0_provider_cipher_by_id(tlsctx,
                          SSL3_CK_CIPHERSUITE_FLAG | 0xffa0U))
         || !TEST_ptr(sc = SSL_CONNECTION_FROM_SSL(external)))
         goto end;
@@ -1531,7 +1517,7 @@ static int test_dtls_exclusion(void)
         || !TEST_false(cipher_stack_has_provider_suite(supported))
         || !TEST_ptr_null(SSL_CIPHER_find(ssl, wire_id))
         || !TEST_ptr(tlsctx = SSL_CTX_new_ex(libctx, NULL, TLS_method()))
-        || !TEST_ptr(suite = ssl_provider_ciphersuite_by_id(tlsctx,
+        || !TEST_ptr(suite = ossl_ssl_get0_provider_cipher_by_id(tlsctx,
                          SSL3_CK_CIPHERSUITE_FLAG | 0xffa0U))
         || !TEST_ptr(sc = SSL_CONNECTION_FROM_SSL(ssl)))
         goto end;
@@ -1760,7 +1746,7 @@ static int test_provider_unload_lifetime(void)
         || !TEST_true(OSSL_PROVIDER_add_builtin(localctx,
             "tls-provider-unload", tls_provider_init))
         || !TEST_ptr(localdef = OSSL_PROVIDER_load(localctx, "default"))
-        || !TEST_ptr(localtls = load_tls_provider(localctx,
+        || !TEST_ptr(localtls = tls_provider_load(localctx,
                          "tls-provider-unload", "valid"))
         || !TEST_true(EVP_set_default_properties(localctx,
             "?provider=tls-provider"))
@@ -1817,7 +1803,7 @@ static int test_late_provider_load_not_discovered(void)
         || !TEST_ptr(localdef = OSSL_PROVIDER_load(localctx, "default"))
         || !TEST_ptr(before = SSL_CTX_new_ex(localctx, NULL, TLS_method()))
         || !TEST_int_eq(sk_SSL_CIPHER_num(before->provider_ciphersuites), 0)
-        || !TEST_ptr(localtls = load_tls_provider(localctx,
+        || !TEST_ptr(localtls = tls_provider_load(localctx,
                          "tls-provider-late", "valid"))
         || !TEST_false(SSL_CTX_set_ciphersuites(before,
             TLS_TEST_SHA256_NAME)))
@@ -1851,7 +1837,7 @@ int setup_tests(void)
         || !TEST_true(OSSL_PROVIDER_add_builtin(libctx, "tls-provider",
             tls_provider_init))
         || !TEST_ptr(defprov = OSSL_PROVIDER_load(libctx, "default"))
-        || !TEST_ptr(tlsprov = load_tls_provider(libctx, "tls-provider",
+        || !TEST_ptr(tlsprov = tls_provider_load(libctx, "tls-provider",
                          "valid-both"))
         || !TEST_true(EVP_set_default_properties(libctx,
             "?provider=tls-provider")))

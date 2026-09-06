@@ -4495,7 +4495,7 @@ SSL_CTX *SSL_CTX_new_ex(OSSL_LIB_CTX *libctx, const char *propq,
         goto err;
     }
 
-    if (!ssl_load_provider_ciphersuites(ret)) {
+    if (!ossl_ssl_load_provider_ciphersuites(ret)) {
         ERR_raise(ERR_LIB_SSL, ERR_R_SSL_LIB);
         goto err;
     }

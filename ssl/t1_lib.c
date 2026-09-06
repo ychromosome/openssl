@@ -234,12 +234,18 @@ struct provider_ctx_data_st {
 #define TLS_CIPHERSUITE_ALGORITHM_NAME_MAX_LEN 255
 #define TLS_PROVIDER_CIPHERSUITE_MAX 128
 
+/** @brief State for one provider's capability query during context creation. */
 struct provider_ciphersuite_data_st {
     SSL_CTX *ctx;
     OSSL_PROVIDER *provider;
-    int callback_failed;
+    int callback_failed; /* Distinguishes callback failure from unsupported. */
 };
 
+/**
+ * @brief Check the printable, colon-free syntax of a provider suite name.
+ * @param name NUL-terminated string, or NULL.
+ * @returns 1 for a nonempty name within the capability limit, otherwise 0.
+ */
 static int tls_ciphersuite_name_is_valid(const char *name)
 {
     const unsigned char *p = (const unsigned char *)name;
@@ -255,6 +261,17 @@ static int tls_ciphersuite_name_is_valid(const char *name)
     return 1;
 }
 
+/**
+ * @brief Copy an exact-length capability string into a terminated buffer.
+ * @param params Capability parameters.
+ * @param key Required UTF8_STRING parameter name.
+ * @param value Output buffer, cleared on failure when value_size is nonzero.
+ * @param value_size Buffer capacity including the terminating NUL.
+ * @returns 1 for a nonempty string fitting the buffer, otherwise 0.
+ *
+ * One trailing NUL is allowed; embedded NULs and trailing data are rejected.
+ * This is stricter than OSSL_PARAM_get_utf8_string().
+ */
 static int tls_ciphersuite_get_string_param(const OSSL_PARAM params[],
     const char *key, char *value, size_t value_size)
 {
@@ -288,6 +305,13 @@ static int tls_ciphersuite_get_string_param(const OSSL_PARAM params[],
     return 1;
 }
 
+/**
+ * @brief Read a required unsigned capability parameter through OSSL_PARAM.
+ * @param params Capability parameters.
+ * @param key Required UNSIGNED_INTEGER parameter name.
+ * @param value Output value on success.
+ * @returns 1 if the one-to-eight-byte value fits unsigned int, otherwise 0.
+ */
 static int tls_ciphersuite_get_uint_param(const OSSL_PARAM params[],
     const char *key, unsigned int *value)
 {
@@ -309,7 +333,7 @@ static int ssl_provider_ciphersuite_name_cmp(
 
 #endif
 
-const SSL_CIPHER *ssl_provider_ciphersuite_by_id(const SSL_CTX *ctx,
+const SSL_CIPHER *ossl_ssl_get0_provider_cipher_by_id(const SSL_CTX *ctx,
     uint32_t id)
 {
     SSL_CIPHER key = { 0 };
@@ -324,7 +348,7 @@ const SSL_CIPHER *ssl_provider_ciphersuite_by_id(const SSL_CTX *ctx,
                  : sk_SSL_CIPHER_value(ctx->provider_ciphersuites, i);
 }
 
-const SSL_CIPHER *ssl_provider_ciphersuite_by_name(const SSL_CTX *ctx,
+const SSL_CIPHER *ossl_ssl_get0_provider_cipher_by_name(const SSL_CTX *ctx,
     const char *name)
 {
     SSL_CIPHER key = { 0 };
@@ -342,6 +366,15 @@ const SSL_CIPHER *ssl_provider_ciphersuite_by_name(const SSL_CTX *ctx,
 
 #ifndef OPENSSL_NO_TLS1_3
 static OSSL_CALLBACK add_provider_ciphersuite;
+/**
+ * @brief Validate a capability descriptor and retain its fetched algorithms.
+ * @param params Descriptor emitted by the provider.
+ * @param data Provider query state; receives callback_failed on fatal failure.
+ * @returns 1 if accepted or unavailable, 0 for invalid data or allocation failure.
+ *
+ * Accepted descriptors are owned by ctx's registry. A failed EVP fetch makes
+ * the descriptor unavailable; this interface cannot classify fetch failures.
+ */
 static int add_provider_ciphersuite(const OSSL_PARAM params[], void *data)
 {
     struct provider_ciphersuite_data_st *pcd = data;
@@ -399,7 +432,7 @@ static int add_provider_ciphersuite(const OSSL_PARAM params[], void *data)
         goto invalid;
     }
 
-    if (ssl3_get_cipher_by_id(id) != NULL || ssl3_has_cipher_name(name)) {
+    if (ssl3_get_cipher_by_id(id) != NULL || ossl_ssl_has_cipher_name(name)) {
         reason = "name or code point collision";
         goto invalid;
     }
@@ -503,6 +536,14 @@ unavailable:
     return 1;
 }
 
+/**
+ * @brief Query one provider, discarding partial results if unsupported.
+ * @param provider Provider being enumerated.
+ * @param vctx SSL_CTX under construction, owning accepted descriptors.
+ * @returns 0 on callback failure, otherwise 1 (also for unsupported capability).
+ *
+ * Preserve callback errors, but suppress errors from unsupported queries.
+ */
 static int discover_provider_ciphersuites(OSSL_PROVIDER *provider, void *vctx)
 {
     struct provider_ciphersuite_data_st pcd;
@@ -530,6 +571,11 @@ static int discover_provider_ciphersuites(OSSL_PROVIDER *provider, void *vctx)
     return 1;
 }
 
+/**
+ * @brief Sort descriptors and reject duplicate IDs or case-insensitive names.
+ * @param ctx Context owning the descriptor stack and receiving a shallow index.
+ * @returns 1 on success, 0 on a collision or allocation failure.
+ */
 static int index_provider_ciphersuites(SSL_CTX *ctx)
 {
     STACK_OF(SSL_CIPHER) *by_name = NULL;
@@ -576,7 +622,7 @@ static int index_provider_ciphersuites(SSL_CTX *ctx)
 }
 #endif
 
-int ssl_load_provider_ciphersuites(SSL_CTX *ctx)
+int ossl_ssl_load_provider_ciphersuites(SSL_CTX *ctx)
 {
     ctx->provider_ciphersuites = sk_SSL_CIPHER_new(ssl_cipher_ptr_id_cmp);
     if (ctx->provider_ciphersuites == NULL)

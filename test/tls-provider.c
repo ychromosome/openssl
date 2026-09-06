@@ -411,7 +411,10 @@ typedef struct {
 
 static void release_tls_alg_ids(PROV_XOR_CTX *provctx);
 
-#define PROV_XOR_LIBCTX_OF(provctx) (((PROV_XOR_CTX *)provctx)->libctx)
+static ossl_inline OSSL_LIB_CTX *tls_provider_get0_libctx(PROV_XOR_CTX *provctx)
+{
+    return provctx->libctx;
+}
 
 #define TLS_TEST_AEAD128_NAME "TLS-TEST-AES-128-GCM"
 #define TLS_TEST_AEAD256_NAME "TLS-TEST-AES-256-GCM"
@@ -436,7 +439,7 @@ static void *tls_proxy_cipher_newctx(void *provctx, const char *name,
     if (ctx == NULL)
         return NULL;
     ctx->subctx = EVP_CIPHER_CTX_new();
-    cipher = EVP_CIPHER_fetch(PROV_XOR_LIBCTX_OF(provctx), name,
+    cipher = EVP_CIPHER_fetch(tls_provider_get0_libctx(provctx), name,
         "provider=default");
     if (ctx->subctx == NULL || cipher == NULL
         || EVP_CipherInit_ex2(ctx->subctx, cipher, NULL, NULL, 1, NULL) <= 0) {
@@ -700,7 +703,7 @@ static void *tls_proxy_digest_newctx(void *provctx, const char *name)
     if (ctx == NULL)
         return NULL;
     ctx->subctx = EVP_MD_CTX_new();
-    ctx->md = EVP_MD_fetch(PROV_XOR_LIBCTX_OF(provctx), name,
+    ctx->md = EVP_MD_fetch(tls_provider_get0_libctx(provctx), name,
         "provider=default");
     if (ctx->subctx == NULL || ctx->md == NULL) {
         EVP_MD_CTX_free(ctx->subctx);
@@ -1084,6 +1087,34 @@ static const struct {
         MALFORMED_UINT_WRONG_TYPE }
 };
 
+/* Single-field string fixtures; the callback only reads these values. */
+static const struct {
+    const char *mode;
+    const char *value;
+    size_t value_len; /* Includes a trailing NUL where the fixture has one. */
+} ciphersuite_name_modes[] = {
+    { "bad-name", "TLS:TEST:INVALID", sizeof("TLS:TEST:INVALID") },
+    { "builtin-name", "TLS_AES_128_GCM_SHA256", sizeof("TLS_AES_128_GCM_SHA256") },
+    { "builtin-name-lower", "tls_aes_128_gcm_sha256", sizeof("tls_aes_128_gcm_sha256") },
+    { "legacy-name", "ECDHE-RSA-AES128-GCM-SHA256", sizeof("ECDHE-RSA-AES128-GCM-SHA256") },
+    { "legacy-name-lower", "ecdhe-rsa-aes128-gcm-sha256", sizeof("ecdhe-rsa-aes128-gcm-sha256") },
+    { "legacy-stdname", "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256", sizeof("TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256") },
+    { "legacy-stdname-lower", "tls_ecdhe_rsa_with_aes_128_gcm_sha256", sizeof("tls_ecdhe_rsa_with_aes_128_gcm_sha256") },
+    { "space-name", "TLS TEST", sizeof("TLS TEST") },
+    { "bang-name", "!", sizeof("!") },
+    { "tilde-name", "~", sizeof("~") },
+    { "delete-name", "TLS\x7f", sizeof("TLS\x7f") },
+    { "nonascii-name", "TLS\x80", sizeof("TLS\x80") },
+    { "embedded-nul-name", "TLS\0X", sizeof("TLS\0X") - 1 }
+};
+
+/**
+ * @brief Emit the descriptor or callback sequence selected by a test mode.
+ * @param pctx Provider context holding the requested mode.
+ * @param cb Consumer of each descriptor, including deliberately invalid ones.
+ * @param arg Opaque consumer argument.
+ * @returns Capability status; modes may deliberately abort after a callback.
+ */
 static int tls_prov_get_ciphersuites(PROV_XOR_CTX *pctx,
     OSSL_CALLBACK *cb, void *arg)
 {
@@ -1093,19 +1124,6 @@ static int tls_prov_get_ciphersuites(PROV_XOR_CTX *pctx,
     char duplicate_name[] = "tls_test_provider_aes_128_gcm_sha256";
     char many_name[64];
     char composed_name[] = "TLS_TEST_COMPOSED_AES_128_GCM_SHA256";
-    char invalid_name[] = "TLS:TEST:INVALID";
-    char builtin_name[] = "TLS_AES_128_GCM_SHA256";
-    char builtin_name_lower[] = "tls_aes_128_gcm_sha256";
-    char legacy_name[] = "ECDHE-RSA-AES128-GCM-SHA256";
-    char legacy_name_lower[] = "ecdhe-rsa-aes128-gcm-sha256";
-    char legacy_stdname[] = "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256";
-    char legacy_stdname_lower[] = "tls_ecdhe_rsa_with_aes_128_gcm_sha256";
-    char space_name[] = "TLS TEST";
-    char bang_name[] = "!";
-    char tilde_name[] = "~";
-    char delete_name[] = { 'T', 'L', 'S', 0x7f, '\0' };
-    char nonascii_name[] = { 'T', 'L', 'S', (char)0x80, '\0' };
-    char embedded_nul_name[] = { 'T', 'L', 'S', '\0', 'X' };
     char one_byte_name = 'X';
     char max_name[256];
     char overlong_name[257];
@@ -1139,6 +1157,14 @@ static int tls_prov_get_ciphersuites(PROV_XOR_CTX *pctx,
         return 1;
 
     memcpy(params, tls_ciphersuite_params, sizeof(tls_ciphersuite_params));
+
+    for (j = 0; j < OSSL_NELEM(ciphersuite_name_modes); j++) {
+        if (strcmp(tls_ciphersuite_mode, ciphersuite_name_modes[j].mode) == 0) {
+            params[TLS_CIPHERSUITE_NAME_PARAM].data = (void *)ciphersuite_name_modes[j].value;
+            params[TLS_CIPHERSUITE_NAME_PARAM].data_size = ciphersuite_name_modes[j].value_len;
+            return cb(params, arg);
+        }
+    }
 
     memset(max_name, 'A', sizeof(max_name));
     max_name[sizeof(max_name) - 1] = '\0';
@@ -1251,56 +1277,13 @@ static int tls_prov_get_ciphersuites(PROV_XOR_CTX *pctx,
         }
         return 1;
     }
-    if (strcmp(tls_ciphersuite_mode, "bad-name") == 0) {
-        params[TLS_CIPHERSUITE_NAME_PARAM].data = invalid_name;
-        params[TLS_CIPHERSUITE_NAME_PARAM].data_size = sizeof(invalid_name);
-    } else if (strcmp(tls_ciphersuite_mode, "builtin-name") == 0) {
-        params[TLS_CIPHERSUITE_NAME_PARAM].data = builtin_name;
-        params[TLS_CIPHERSUITE_NAME_PARAM].data_size = sizeof(builtin_name);
-    } else if (strcmp(tls_ciphersuite_mode, "builtin-name-lower") == 0) {
-        params[TLS_CIPHERSUITE_NAME_PARAM].data = builtin_name_lower;
-        params[TLS_CIPHERSUITE_NAME_PARAM].data_size
-            = sizeof(builtin_name_lower);
-    } else if (strcmp(tls_ciphersuite_mode, "legacy-name") == 0) {
-        params[TLS_CIPHERSUITE_NAME_PARAM].data = legacy_name;
-        params[TLS_CIPHERSUITE_NAME_PARAM].data_size = sizeof(legacy_name);
-    } else if (strcmp(tls_ciphersuite_mode, "legacy-name-lower") == 0) {
-        params[TLS_CIPHERSUITE_NAME_PARAM].data = legacy_name_lower;
-        params[TLS_CIPHERSUITE_NAME_PARAM].data_size
-            = sizeof(legacy_name_lower);
-    } else if (strcmp(tls_ciphersuite_mode, "legacy-stdname") == 0) {
-        params[TLS_CIPHERSUITE_NAME_PARAM].data = legacy_stdname;
-        params[TLS_CIPHERSUITE_NAME_PARAM].data_size = sizeof(legacy_stdname);
-    } else if (strcmp(tls_ciphersuite_mode, "legacy-stdname-lower") == 0) {
-        params[TLS_CIPHERSUITE_NAME_PARAM].data = legacy_stdname_lower;
-        params[TLS_CIPHERSUITE_NAME_PARAM].data_size
-            = sizeof(legacy_stdname_lower);
-    } else if (strcmp(tls_ciphersuite_mode, "space-name") == 0) {
-        params[TLS_CIPHERSUITE_NAME_PARAM].data = space_name;
-        params[TLS_CIPHERSUITE_NAME_PARAM].data_size = sizeof(space_name);
-    } else if (strcmp(tls_ciphersuite_mode, "bang-name") == 0) {
-        params[TLS_CIPHERSUITE_NAME_PARAM].data = bang_name;
-        params[TLS_CIPHERSUITE_NAME_PARAM].data_size = sizeof(bang_name);
-    } else if (strcmp(tls_ciphersuite_mode, "tilde-name") == 0) {
-        params[TLS_CIPHERSUITE_NAME_PARAM].data = tilde_name;
-        params[TLS_CIPHERSUITE_NAME_PARAM].data_size = sizeof(tilde_name);
-    } else if (strcmp(tls_ciphersuite_mode, "delete-name") == 0) {
-        params[TLS_CIPHERSUITE_NAME_PARAM].data = delete_name;
-        params[TLS_CIPHERSUITE_NAME_PARAM].data_size = sizeof(delete_name);
-    } else if (strcmp(tls_ciphersuite_mode, "nonascii-name") == 0) {
-        params[TLS_CIPHERSUITE_NAME_PARAM].data = nonascii_name;
-        params[TLS_CIPHERSUITE_NAME_PARAM].data_size = sizeof(nonascii_name);
-    } else if (strcmp(tls_ciphersuite_mode, "unterminated-name") == 0) {
+    if (strcmp(tls_ciphersuite_mode, "unterminated-name") == 0) {
         params[TLS_CIPHERSUITE_NAME_PARAM].data_size
             = strlen(tls_ciphersuite_name);
     } else if (strcmp(tls_ciphersuite_mode, "unterminated-max-name") == 0) {
         params[TLS_CIPHERSUITE_NAME_PARAM].data = overlong_name;
         params[TLS_CIPHERSUITE_NAME_PARAM].data_size
             = sizeof(overlong_name) - 1;
-    } else if (strcmp(tls_ciphersuite_mode, "embedded-nul-name") == 0) {
-        params[TLS_CIPHERSUITE_NAME_PARAM].data = embedded_nul_name;
-        params[TLS_CIPHERSUITE_NAME_PARAM].data_size
-            = sizeof(embedded_nul_name);
     } else if (strcmp(tls_ciphersuite_mode, "max-name") == 0) {
         params[TLS_CIPHERSUITE_NAME_PARAM].data = max_name;
         params[TLS_CIPHERSUITE_NAME_PARAM].data_size = sizeof(max_name);
@@ -1993,7 +1976,7 @@ static void *xor_gen_init(void *provctx, int selection,
         return NULL;
 
     gctx->selection = selection;
-    gctx->libctx = PROV_XOR_LIBCTX_OF(provctx);
+    gctx->libctx = tls_provider_get0_libctx(provctx);
 
     if (!xor_gen_set_params(gctx, params)) {
         OPENSSL_free(gctx);
@@ -2435,7 +2418,7 @@ static X509_SIG *p8info_to_encp8(PKCS8_PRIV_KEY_INFO *p8info,
     X509_SIG *p8 = NULL;
     char kstr[PEM_BUFSIZE];
     size_t klen = 0;
-    OSSL_LIB_CTX *libctx = PROV_XOR_LIBCTX_OF(ctx->provctx);
+    OSSL_LIB_CTX *libctx = tls_provider_get0_libctx(ctx->provctx);
 
     if (ctx->cipher == NULL || ctx->pwcb == NULL)
         return NULL;
@@ -2813,7 +2796,7 @@ static const OSSL_PARAM *key2any_settable_ctx_params(ossl_unused void *provctx)
 static int key2any_set_ctx_params(void *vctx, const OSSL_PARAM params[])
 {
     struct key2any_ctx_st *ctx = vctx;
-    OSSL_LIB_CTX *libctx = PROV_XOR_LIBCTX_OF(ctx->provctx);
+    OSSL_LIB_CTX *libctx = tls_provider_get0_libctx(ctx->provctx);
     const OSSL_PARAM *cipherp = OSSL_PARAM_locate_const(params, OSSL_ENCODER_PARAM_CIPHER);
     const OSSL_PARAM *propsp = OSSL_PARAM_locate_const(params, OSSL_ENCODER_PARAM_PROPERTIES);
     const OSSL_PARAM *save_paramsp = OSSL_PARAM_locate_const(params, OSSL_ENCODER_PARAM_SAVE_PARAMETERS);
@@ -3279,7 +3262,7 @@ static void *xor_der2key_decode_p8(const unsigned char **input_der,
     if ((p8inf = d2i_PKCS8_PRIV_KEY_INFO(NULL, input_der, input_der_len)) != NULL
         && PKCS8_pkey_get0(NULL, NULL, NULL, &alg, p8inf)
         && OBJ_obj2nid(alg->algorithm) == ctx->desc->evp_type)
-        key = key_from_pkcs8(p8inf, PROV_XOR_LIBCTX_OF(ctx->provctx), NULL);
+        key = key_from_pkcs8(p8inf, tls_provider_get0_libctx(ctx->provctx), NULL);
     PKCS8_PRIV_KEY_INFO_free(p8inf);
 
     return key;

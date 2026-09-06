@@ -202,7 +202,7 @@ const SSL_CIPHER *ssl_cipher_canon(const SSL_CONNECTION *s,
         return cipher;
     if (s == NULL)
         return NULL;
-    canonical = ssl_provider_ciphersuite_by_id(s->session_ctx, cipher->id);
+    canonical = ossl_ssl_get0_provider_cipher_by_id(s->session_ctx, cipher->id);
     if (!ssl_provider_ciphersuite_equivalent(canonical, cipher))
         return NULL;
     return canonical;
@@ -267,7 +267,7 @@ static const SSL_CIPHER *ssl_provider_ciphersuite_by_char(
 
     id = SSL3_CK_CIPHERSUITE_FLAG | ((uint32_t)ptr[0] << 8L)
         | (uint32_t)ptr[1];
-    return ssl_provider_ciphersuite_by_id(s->session_ctx, id);
+    return ossl_ssl_get0_provider_cipher_by_id(s->session_ctx, id);
 }
 
 static const int default_mac_pkey_id[SSL_MD_NUM_IDX] = {
@@ -1472,7 +1472,7 @@ static int ciphersuite_cb(const char *elem, int len, void *arg)
 
     cipher = ssl3_get_tls13_cipher_by_std_name(name);
     if (cipher == NULL)
-        cipher = ssl_provider_ciphersuite_by_name(data->ctx, name);
+        cipher = ossl_ssl_get0_provider_cipher_by_name(data->ctx, name);
     if (cipher == NULL)
         /* Ciphersuite not found but return 1 to parse rest of the list */
         return 1;

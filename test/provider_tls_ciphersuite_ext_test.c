@@ -20,10 +20,7 @@
 #include "testutil.h"
 #include "threadstest.h"
 
-int tls_provider_init(const OSSL_CORE_HANDLE *handle,
-    const OSSL_DISPATCH *in,
-    const OSSL_DISPATCH **out,
-    void **provctx);
+#include "helpers/tls_provider.h"
 
 #define PROV_SHA256_NAME "TLS_TEST_PROVIDER_AES_128_GCM_SHA256"
 #define PROV_SHA384_NAME "TLS_TEST_PROVIDER_AES_256_GCM_SHA384"
@@ -35,17 +32,6 @@ int tls_provider_init(const OSSL_CORE_HANDLE *handle,
 static OSSL_LIB_CTX *libctx;
 static OSSL_PROVIDER *defprov, *tlsprov;
 static char *cert, *privkey;
-
-static OSSL_PROVIDER *load_tls_provider(OSSL_LIB_CTX *ctx, const char *name,
-    const char *mode)
-{
-    OSSL_PARAM params[] = {
-        OSSL_PARAM_utf8_string("tls-ciphersuite-mode", (char *)mode, 0),
-        OSSL_PARAM_END
-    };
-
-    return OSSL_PROVIDER_load_ex(ctx, name, params);
-}
 
 typedef struct {
     const char *provname;
@@ -357,7 +343,7 @@ static int test_external_cache_rejects_provider_session(void)
     int ret = 0;
 
     if (!TEST_ptr(ctx = SSL_CTX_new_ex(libctx, NULL, TLS_method()))
-        || !TEST_ptr(suite = ssl_provider_ciphersuite_by_name(ctx,
+        || !TEST_ptr(suite = ossl_ssl_get0_provider_cipher_by_name(ctx,
                          PROV_SHA256_NAME))
         || !TEST_ptr(marked = SSL_SESSION_new())
         || !TEST_true(ossl_ssl_session_set1_cipher(marked, suite))
@@ -401,7 +387,7 @@ static int test_public_provider_cipher_assignment_rejected(void)
 
     if (!TEST_ptr(ctx = SSL_CTX_new_ex(libctx, NULL, TLS_method()))
         || !TEST_ptr(ssl = SSL_new(ctx))
-        || !TEST_ptr(suite = ssl_provider_ciphersuite_by_name(ctx,
+        || !TEST_ptr(suite = ossl_ssl_get0_provider_cipher_by_name(ctx,
                          PROV_SHA256_NAME))
         || !TEST_ptr(builtin = SSL_CIPHER_find(ssl, builtin_id))
         || !TEST_ptr(session = SSL_SESSION_new())
@@ -739,7 +725,7 @@ static int test_provider_aead_limit_failure(void)
         || !TEST_true(OSSL_PROVIDER_add_builtin(localctx,
             "tls-provider-limit", tls_provider_init))
         || !TEST_ptr(localdef = OSSL_PROVIDER_load(localctx, "default"))
-        || !TEST_ptr(localtls = load_tls_provider(localctx,
+        || !TEST_ptr(localtls = tls_provider_load(localctx,
                          "tls-provider-limit", "valid-limit"))
         || !TEST_true(EVP_set_default_properties(localctx,
             "?provider=tls-provider"))
@@ -1008,9 +994,9 @@ static int test_multiple_providers_collide(void)
         || !TEST_true(OSSL_PROVIDER_add_builtin(localctx, "tls-provider-c",
             tls_provider_init))
         || !TEST_ptr(localdef = OSSL_PROVIDER_load(localctx, "default"))
-        || !TEST_ptr(second = load_tls_provider(localctx, "tls-provider-b",
+        || !TEST_ptr(second = tls_provider_load(localctx, "tls-provider-b",
                          "valid"))
-        || !TEST_ptr(third = load_tls_provider(localctx, "tls-provider-c",
+        || !TEST_ptr(third = tls_provider_load(localctx, "tls-provider-c",
                          "valid")))
         goto end;
 
@@ -1106,7 +1092,7 @@ static int test_provider_discovery_reload_lifecycle(void)
             || !TEST_true(OSSL_PROVIDER_add_builtin(ctx, "tls-provider-reload",
                 tls_provider_init))
             || !TEST_ptr(local_default = OSSL_PROVIDER_load(ctx, "default"))
-            || !TEST_ptr(provider = load_tls_provider(ctx,
+            || !TEST_ptr(provider = tls_provider_load(ctx,
                              "tls-provider-reload", "valid"))
             || !TEST_ptr(sslctx = SSL_CTX_new_ex(ctx, NULL, TLS_method()))
             || !TEST_int_eq(sk_SSL_CIPHER_num(
@@ -1151,7 +1137,7 @@ static void provider_discovery_reload_worker(void)
             && OSSL_PROVIDER_add_builtin(ctx, "tls-provider-reload-thread",
                 tls_provider_init)
             && (local_default = OSSL_PROVIDER_load(ctx, "default")) != NULL
-            && (provider = load_tls_provider(ctx,
+            && (provider = tls_provider_load(ctx,
                     "tls-provider-reload-thread", "valid"))
                 != NULL
             && (sslctx = SSL_CTX_new_ex(ctx, NULL, TLS_method())) != NULL
@@ -1214,7 +1200,7 @@ int setup_tests(void)
         || !TEST_true(OSSL_PROVIDER_add_builtin(libctx, "tls-provider",
             tls_provider_init))
         || !TEST_ptr(defprov = OSSL_PROVIDER_load(libctx, "default"))
-        || !TEST_ptr(tlsprov = load_tls_provider(libctx, "tls-provider",
+        || !TEST_ptr(tlsprov = tls_provider_load(libctx, "tls-provider",
                          "valid-both"))
         || !TEST_true(EVP_set_default_properties(libctx,
             "?provider=tls-provider")))

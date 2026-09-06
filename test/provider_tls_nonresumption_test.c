@@ -17,10 +17,7 @@
 #include "helpers/ssltestlib.h"
 #include "testutil.h"
 
-int tls_provider_init(const OSSL_CORE_HANDLE *handle,
-    const OSSL_DISPATCH *in,
-    const OSSL_DISPATCH **out,
-    void **provctx);
+#include "helpers/tls_provider.h"
 
 #define TLS_TEST_CIPHERSUITE "TLS_TEST_PROVIDER_AES_128_GCM_SHA256"
 
@@ -103,17 +100,6 @@ static int check_provider_session_error(int result)
     return ret;
 }
 
-static OSSL_PROVIDER *load_tls_provider(OSSL_LIB_CTX *ctx)
-{
-    char mode[] = "valid";
-    OSSL_PARAM params[] = {
-        OSSL_PARAM_utf8_string("tls-ciphersuite-mode", mode, 0),
-        OSSL_PARAM_END
-    };
-
-    return OSSL_PROVIDER_load_ex(ctx, "tls-provider", params);
-}
-
 static int make_ctx_pair(const char *ciphersuite, int tickets,
     SSL_CTX **sctx, SSL_CTX **cctx)
 {
@@ -178,7 +164,7 @@ static int test_provider_nst_extension_parser(void)
     if (!TEST_ptr(ctx = SSL_CTX_new_ex(libctx, NULL,
                       tlsv1_3_client_method()))
         || !TEST_true(SSL_CTX_set_ciphersuites(ctx, TLS_TEST_CIPHERSUITE))
-        || !TEST_ptr(provider_cipher = ssl_provider_ciphersuite_by_name(ctx,
+        || !TEST_ptr(provider_cipher = ossl_ssl_get0_provider_cipher_by_name(ctx,
                          TLS_TEST_CIPHERSUITE))
         || !TEST_ptr(probe = SSL_new(ctx))
         || !TEST_ptr(builtin_cipher = SSL_CIPHER_find(probe,
@@ -427,7 +413,7 @@ int setup_tests(void)
         || !TEST_true(OSSL_PROVIDER_add_builtin(libctx, "tls-provider",
             tls_provider_init))
         || !TEST_ptr(defprov = OSSL_PROVIDER_load(libctx, "default"))
-        || !TEST_ptr(tlsprov = load_tls_provider(libctx))
+        || !TEST_ptr(tlsprov = tls_provider_load(libctx, "tls-provider", "valid"))
         || !TEST_true(EVP_set_default_properties(libctx,
             "?provider=tls-provider")))
         return 0;
