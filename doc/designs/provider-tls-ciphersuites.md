@@ -119,10 +119,10 @@ External-PSK callbacks reject a session that has held a provider suite. This
 version does not support provider-backed external PSK or 0-RTT.
 
 A built-in ticket or external PSK may negotiate a provider suite with the same
-transcript hash, following [RFC 8446 section 4.6.1](https://www.rfc-editor.org/rfc/rfc8446.html#section-4.6.1).
-The resulting provider session is not resumable. Shared input sessions must be
-copied before assigning the new descriptor; this keeps the original ticket or
-cache entry unchanged.
+transcript hash, following [RFC 8446 section 4.6.1][resumption]. The resulting
+provider session is not resumable. Shared input sessions must be copied before
+assigning the new descriptor; this keeps the original ticket or cache entry
+unchanged.
 
 Public `SSL_CIPHER` pointers are borrowed. Values returned by
 `SSL_CIPHER_find()`, `SSL_get1_supported_ciphers()` and
@@ -153,3 +153,5 @@ Built-in duplicate handling is unchanged.
 
 Stronger AEAD compatibility probing requires a defined, side-effect-free EVP
 contract. Metadata checks do not prove that record operations will succeed.
+
+[resumption]: https://www.rfc-editor.org/rfc/rfc8446.html#section-4.6.1

@@ -77,7 +77,7 @@ An empty list is permissible. The default value for this setting is:
 SSL_set_ciphersuites() is the same as SSL_CTX_set_ciphersuites() except it
 configures the ciphersuites for B<ssl>. Provider-defined names resolve through
 the original SSL_CTX; L<SSL_set_SSL_CTX(3)> does not replace that registry.
-SSL_set_SSL_CTX() otherwise keeps its existing behavior. Switching to a
+SSL_set_SSL_CTX() otherwise keeps its existing behaviour. Switching to a
 context with a different library context or property query is outside the
 provider-ciphersuite contract.
 

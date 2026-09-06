@@ -136,8 +136,8 @@ OpenSSL 4.1
    External-PSK callbacks reject such sessions; provider-backed external PSK
    and 0-RTT are not supported. Provider AEADs must enforce their own per-key
    record limits. Provider suites do not use kTLS. Each SSL_CTX accepts at most
-   128 provider suites;
-   duplicate provider wire IDs in a peer list are discarded before selection.
+   128 provider suites; duplicate provider wire IDs in a peer list are discarded
+   before selection.
 
    *Martin Wolf*
 
