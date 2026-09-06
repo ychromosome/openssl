@@ -484,7 +484,7 @@ err:
     pcd->callback_failed = 1;
     EVP_CIPHER_free(cipher);
     EVP_MD_free(digest);
-    ssl_cipher_free(suite);
+    ossl_ssl_cipher_free(suite);
     return 0;
 invalid:
     ERR_raise_data(ERR_LIB_SSL, SSL_R_BAD_CIPHER,
@@ -499,7 +499,7 @@ unavailable:
         name[0] == '\0' ? "<unnamed>" : name);
     EVP_CIPHER_free(cipher);
     EVP_MD_free(digest);
-    ssl_cipher_free(suite);
+    ossl_ssl_cipher_free(suite);
     return 1;
 }
 
@@ -524,7 +524,7 @@ static int discover_provider_ciphersuites(OSSL_PROVIDER *provider, void *vctx)
     }
     if (ret == 0) {
         while (sk_SSL_CIPHER_num(ctx->provider_ciphersuites) > count)
-            ssl_cipher_free(sk_SSL_CIPHER_pop(ctx->provider_ciphersuites));
+            ossl_ssl_cipher_free(sk_SSL_CIPHER_pop(ctx->provider_ciphersuites));
     }
     (void)ERR_pop_to_mark();
     return 1;

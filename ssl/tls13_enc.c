@@ -385,7 +385,7 @@ int tls13_setup_key_block(SSL_CONNECTION *s)
         return 0;
     }
 
-    if (!ssl_session_set_cipher(s->session, s->s3.tmp.new_cipher)) {
+    if (!ossl_ssl_session_set1_cipher(s->session, s->s3.tmp.new_cipher)) {
         SSLfatal_alert(s, SSL_AD_INTERNAL_ERROR);
         return 0;
     }

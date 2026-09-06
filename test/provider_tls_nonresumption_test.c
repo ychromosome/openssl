@@ -148,7 +148,7 @@ static MSG_PROCESS_RETURN process_nst_extensions(SSL_CTX *ctx,
     ssl = SSL_new(ctx);
     session = SSL_SESSION_new();
     if (ssl == NULL || session == NULL
-        || !ssl_session_set_cipher(session, cipher)
+        || !ossl_ssl_session_set1_cipher(session, cipher)
         || !SSL_SESSION_set_protocol_version(session, TLS1_3_VERSION)
         || !PACKET_buf_init(&packet, nst, 14 + extensions_len))
         goto end;
@@ -365,7 +365,7 @@ static int test_injected_ticket_preserves_marker(void)
         || !TEST_int_eq(nst_read, 0)
         || !TEST_ptr(builtin = SSL_CIPHER_find(serverssl,
                          builtin_ciphersuite_id))
-        || !TEST_true(ssl_session_set_cipher(serverconn->session, builtin)))
+        || !TEST_true(ossl_ssl_session_set1_cipher(serverconn->session, builtin)))
         goto end;
 
     /* Inject a ticket from a non-conforming peer. */

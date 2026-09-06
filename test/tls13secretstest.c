@@ -127,7 +127,7 @@ static unsigned char server_ats_iv[] = {
 };
 
 /* Mocked out implementations of various functions */
-int ssl_session_set_cipher(SSL_SESSION *session, const SSL_CIPHER *cipher)
+int ossl_ssl_session_set1_cipher(SSL_SESSION *session, const SSL_CIPHER *cipher)
 {
     session->cipher = cipher;
     return 1;

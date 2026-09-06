@@ -4736,7 +4736,7 @@ int SSL_CTX_up_ref(SSL_CTX *ctx)
 
 static void ssl_cipher_free_nonconst(SSL_CIPHER *cipher)
 {
-    ssl_cipher_free(cipher);
+    ossl_ssl_cipher_free(cipher);
 }
 
 void SSL_CTX_free(SSL_CTX *a)

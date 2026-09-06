@@ -290,7 +290,7 @@ SSL_SESSION *d2i_SSL_SESSION_ex(SSL_SESSION **a, const unsigned char **pp,
             goto err;
     } else {
         ret = *a;
-        if (!ssl_cipher_up_ref(ret->cipher))
+        if (!ossl_ssl_cipher_up_ref(ret->cipher))
             goto err;
         saved_cipher = ret->cipher;
         saved_cipher_id = ret->cipher_id;
@@ -322,7 +322,7 @@ SSL_SESSION *d2i_SSL_SESSION_ex(SSL_SESSION **a, const unsigned char **pp,
         | (unsigned long)as->cipher->data[1];
 
     cipher = ssl3_get_cipher_by_id(id);
-    if (cipher == NULL || !ssl_session_set_cipher(ret, cipher))
+    if (cipher == NULL || !ossl_ssl_session_set1_cipher(ret, cipher))
         goto err;
     ret->cipher_id = id;
 
@@ -440,7 +440,7 @@ SSL_SESSION *d2i_SSL_SESSION_ex(SSL_SESSION **a, const unsigned char **pp,
     ret->provider_cipher_seen = 0;
     ret->psk_external = 0;
 
-    ssl_cipher_free(saved_cipher);
+    ossl_ssl_cipher_free(saved_cipher);
 
     if ((a != NULL) && (*a == NULL))
         *a = ret;
@@ -450,12 +450,12 @@ SSL_SESSION *d2i_SSL_SESSION_ex(SSL_SESSION **a, const unsigned char **pp,
 err:
     M_ASN1_free_of(as, SSL_SESSION_ASN1);
     if (reuse && ret != NULL && saved_cipher_valid) {
-        ssl_cipher_free(ret->cipher);
+        ossl_ssl_cipher_free(ret->cipher);
         ret->cipher = saved_cipher;
         ret->cipher_id = saved_cipher_id;
         saved_cipher = NULL;
     }
-    ssl_cipher_free(saved_cipher);
+    ossl_ssl_cipher_free(saved_cipher);
     if ((a == NULL) || (*a != ret))
         SSL_SESSION_free(ret);
     return NULL;

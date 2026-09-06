@@ -127,7 +127,7 @@ static int ssl_cipher_info_find(const ssl_cipher_table *table,
 #define ssl_cipher_info_lookup(table, x) \
     ssl_cipher_info_find(table, OSSL_NELEM(table), x)
 
-int ssl_cipher_up_ref(const SSL_CIPHER *cipher)
+int ossl_ssl_cipher_up_ref(const SSL_CIPHER *cipher)
 {
     SSL_CIPHER *mutable_cipher = (SSL_CIPHER *)cipher;
     int ref = 0;
@@ -143,7 +143,7 @@ int ssl_cipher_up_ref(const SSL_CIPHER *cipher)
     return 1;
 }
 
-void ssl_cipher_free(const SSL_CIPHER *cipher)
+void ossl_ssl_cipher_free(const SSL_CIPHER *cipher)
 {
     SSL_CIPHER *mutable_cipher = (SSL_CIPHER *)cipher;
     int ref;

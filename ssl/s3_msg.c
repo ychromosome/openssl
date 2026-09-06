@@ -27,7 +27,7 @@ int ssl3_do_change_cipher_spec(SSL_CONNECTION *s)
             return 0;
         }
 
-        if (!ssl_session_set_cipher(s->session, s->s3.tmp.new_cipher)) {
+        if (!ossl_ssl_session_set1_cipher(s->session, s->s3.tmp.new_cipher)) {
             SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_CRYPTO_LIB);
             return 0;
         }

@@ -491,10 +491,10 @@ struct ssl_cipher_st {
     uint32_t alg_bits; /* Number of bits for algorithm */
 
     /* Provider-defined TLS 1.3 ciphersuites own these trailing fields. */
-    int origin;
+    int origin; /* SSL_CIPHER_ORIGIN_*; static entries need no reference count. */
     CRYPTO_REF_COUNT references;
-    const EVP_CIPHER *provider_cipher;
-    const EVP_MD *provider_digest;
+    const EVP_CIPHER *provider_cipher; /* Owned fetched AEAD implementation. */
+    const EVP_MD *provider_digest; /* Owned fetched transcript digest. */
 };
 
 /* Used to hold SSL/TLS functions */
@@ -2879,11 +2879,21 @@ __owur SSL_SESSION *lookup_sess_in_cache(SSL_CONNECTION *s,
     size_t sess_id_len);
 __owur int ssl_get_prev_session(SSL_CONNECTION *s, CLIENTHELLO_MSG *hello);
 __owur SSL_SESSION *ssl_session_dup(const SSL_SESSION *src, int ticket);
-__owur int ssl_session_set_cipher(SSL_SESSION *session,
+/**
+ * @brief Replace a session's cipher while retaining a descriptor reference.
+ * @param session Session to update, exclusively owned by the caller.
+ * @param cipher Borrowed descriptor to retain, or NULL to clear the cipher.
+ * @returns 1 on success, 0 if taking the new reference fails (no change).
+ *
+ * Provider descriptors mark the session as non-resumable and set its sticky
+ * provider provenance. Replacing the cipher never clears that provenance.
+ * Static descriptors have process lifetime and need no counted reference.
+ */
+__owur int ossl_ssl_session_set1_cipher(SSL_SESSION *session,
     const SSL_CIPHER *cipher);
 __owur int ssl_session_is_external_psk_admissible(const SSL_SESSION *session);
-__owur int ssl_cipher_up_ref(const SSL_CIPHER *cipher);
-void ssl_cipher_free(const SSL_CIPHER *cipher);
+__owur int ossl_ssl_cipher_up_ref(const SSL_CIPHER *cipher);
+void ossl_ssl_cipher_free(const SSL_CIPHER *cipher);
 __owur const SSL_CIPHER *ssl_cipher_canon(const SSL_CONNECTION *s,
     const SSL_CIPHER *cipher);
 __owur const SSL_CIPHER *ssl_cipher_canon_enabled(const SSL_CONNECTION *s,

@@ -360,7 +360,7 @@ static int test_external_cache_rejects_provider_session(void)
         || !TEST_ptr(suite = ssl_provider_ciphersuite_by_name(ctx,
                          PROV_SHA256_NAME))
         || !TEST_ptr(marked = SSL_SESSION_new())
-        || !TEST_true(ssl_session_set_cipher(marked, suite))
+        || !TEST_true(ossl_ssl_session_set1_cipher(marked, suite))
         || !TEST_ptr(dup = ssl_session_dup(marked, 0))
         || !TEST_true(dup->provider_cipher_seen)
         || !TEST_false(dup->not_resumable)
@@ -487,7 +487,7 @@ static SSL_SESSION *make_psk(SSL *ssl, unsigned int codepoint, size_t mdsize,
         return NULL;
     }
     cipher_set = origin == SSL_CIPHER_ORIGIN_PROVIDER
-        ? ssl_session_set_cipher(sess, cipher)
+        ? ossl_ssl_session_set1_cipher(sess, cipher)
         : SSL_SESSION_set_cipher(sess, cipher);
 
     if (!TEST_int_eq(cipher->origin, origin)

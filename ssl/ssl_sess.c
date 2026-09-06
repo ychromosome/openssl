@@ -128,14 +128,14 @@ SSL_SESSION *SSL_SESSION_new(void)
     return ss;
 }
 
-int ssl_session_set_cipher(SSL_SESSION *session, const SSL_CIPHER *cipher)
+int ossl_ssl_session_set1_cipher(SSL_SESSION *session, const SSL_CIPHER *cipher)
 {
-    if (!ssl_cipher_up_ref(cipher)) {
+    if (!ossl_ssl_cipher_up_ref(cipher)) {
         ERR_raise(ERR_LIB_SSL, ERR_R_CRYPTO_LIB);
         return 0;
     }
 
-    ssl_cipher_free(session->cipher);
+    ossl_ssl_cipher_free(session->cipher);
     session->cipher = cipher;
     if (cipher != NULL && cipher->origin == SSL_CIPHER_ORIGIN_PROVIDER) {
         session->provider_cipher_seen = 1;
@@ -206,7 +206,7 @@ static SSL_SESSION *ssl_session_dup_intern(const SSL_SESSION *src, int ticket)
         goto err;
     }
 
-    if (!ssl_session_set_cipher(dest, src->cipher))
+    if (!ossl_ssl_session_set1_cipher(dest, src->cipher))
         goto err;
 
     if (src->peer != NULL) {
@@ -979,7 +979,7 @@ void SSL_SESSION_free(SSL_SESSION *ss)
 #endif
     OPENSSL_free(ss->ext.alpn_selected);
     OPENSSL_free(ss->ticket_appdata);
-    ssl_cipher_free(ss->cipher);
+    ossl_ssl_cipher_free(ss->cipher);
     CRYPTO_FREE_REF(&ss->references);
     OPENSSL_clear_free(ss, sizeof(*ss));
 }
@@ -1133,7 +1133,7 @@ int SSL_SESSION_set_cipher(SSL_SESSION *s, const SSL_CIPHER *cipher)
             SSL_R_PROVIDER_CIPHERSUITE_SESSION_UNSUPPORTED);
         return 0;
     }
-    return ssl_session_set_cipher(s, cipher);
+    return ossl_ssl_session_set1_cipher(s, cipher);
 }
 
 const char *SSL_SESSION_get0_hostname(const SSL_SESSION *s)
