@@ -638,11 +638,18 @@ int ossl_method_store_remove_all_provided(OSSL_METHOD_STORE *store,
     return 1;
 }
 
+/** @brief Search state shared by the method-store teardown callbacks. */
 struct teardown_method_data {
     const OSSL_PROVIDER *prov;
-    void *method;
+    void *method; /* Borrowed match; NULL until one is found. */
 };
 
+/**
+ * @brief Find the first implementation belonging to the teardown provider.
+ * @param idx Algorithm index (unused).
+ * @param alg Algorithm whose implementations are searched.
+ * @param arg Search state; an existing match is retained.
+ */
 static void alg_find_provider_method(ossl_uintmax_t idx, ALGORITHM *alg,
     void *arg)
 {
@@ -661,6 +668,12 @@ static void alg_find_provider_method(ossl_uintmax_t idx, ALGORITHM *alg,
     }
 }
 
+/**
+ * @brief Remove implementation references to a method during teardown.
+ * @param idx Algorithm index (unused).
+ * @param alg Algorithm whose implementations are pruned.
+ * @param arg Method identity, used only for pointer comparison.
+ */
 static void alg_teardown_method(ossl_uintmax_t idx, ALGORITHM *alg, void *arg)
 {
     const void *method = arg;
@@ -686,6 +699,11 @@ static void *query_find_provider_method(QUERY *query,
     return NULL;
 }
 
+/**
+ * @brief Unlink cache aliases before releasing their method references.
+ * @param head Cache or archive list to prune; updated in place.
+ * @param method Method identity, including aliases with no provider in the key.
+ */
 static void query_teardown_method(QUERY **head, const void *method)
 {
     QUERY *query;

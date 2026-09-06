@@ -248,6 +248,13 @@ static void ossl_provider_child_cb_free(OSSL_PROVIDER_CHILD_CB *cb)
     OPENSSL_free(cb);
 }
 
+/**
+ * @brief Drop parent method-store references to a child-context owner.
+ * @param prov Provider in a library context being destroyed with no users left.
+ *
+ * All parent stores must remain alive until the provider's child contexts have
+ * released methods borrowed from them.
+ */
 static void provider_store_purge_child_owner_methods(OSSL_PROVIDER *prov)
 {
     OSSL_LIB_CTX *libctx = prov->libctx;
