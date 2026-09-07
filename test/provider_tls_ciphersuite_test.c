@@ -311,7 +311,7 @@ static void count_server_hellos_cb(int write_p, int version, int content_type,
         (*count)++;
 }
 
-#ifndef OPENSSL_NO_TLS1_2
+#if !defined(OPENSSL_NO_TLS1_2)
 static int expect_no_shared_cipher(SSL *serverssl, SSL *clientssl)
 {
     unsigned long error;
@@ -329,7 +329,7 @@ static int expect_no_shared_cipher(SSL *serverssl, SSL *clientssl)
         || ERR_GET_REASON(error) != SSL_R_NO_SHARED_CIPHER);
     return 1;
 }
-#endif
+#endif /* !defined(OPENSSL_NO_TLS1_2) */
 
 typedef struct {
     SSL_CTX *first;
@@ -392,7 +392,7 @@ static int check_valid_suite(const SSL_CIPHER *suite, int index,
     return 1;
 }
 
-#ifndef OPENSSL_NO_DTLS
+#if !defined(OPENSSL_NO_DTLS)
 static int cipher_stack_has_provider_suite(
     const STACK_OF(SSL_CIPHER) *ciphers)
 {
@@ -405,7 +405,7 @@ static int cipher_stack_has_provider_suite(
     }
     return 0;
 }
-#endif
+#endif /* !defined(OPENSSL_NO_DTLS) */
 
 static int test_ciphersuite_mode(int idx)
 {
@@ -818,7 +818,7 @@ static int test_provider_hrr(void)
 
 #if defined(OPENSSL_NO_EC) && defined(OPENSSL_NO_DH)
     return TEST_skip("EC and DH are disabled");
-#endif
+#endif /* defined(OPENSSL_NO_EC) && defined(OPENSSL_NO_DH) */
 
     if (!TEST_true(create_ssl_ctx_pair(libctx, TLS_server_method(),
             TLS_client_method(), TLS1_3_VERSION, TLS1_3_VERSION,
@@ -826,7 +826,7 @@ static int test_provider_hrr(void)
         || !TEST_true(SSL_CTX_set_num_tickets(sctx, 0))
         || !TEST_true(SSL_CTX_set_ciphersuites(sctx, TLS_TEST_SHA256_NAME))
         || !TEST_true(SSL_CTX_set_ciphersuites(cctx, TLS_TEST_SHA256_NAME))
-#ifndef OPENSSL_NO_EC
+#if !defined(OPENSSL_NO_EC)
         /* Group lists from tls13groupselection_test. */
         || !TEST_true(SSL_CTX_set1_groups_list(cctx,
             "secp521r1:secp384r1:prime256v1"))
@@ -836,7 +836,7 @@ static int test_provider_hrr(void)
         || !TEST_true(SSL_CTX_set1_groups_list(cctx,
             "ffdhe2048:ffdhe3072"))
         || !TEST_true(SSL_CTX_set1_groups_list(sctx, "ffdhe3072"))
-#endif
+#endif /* !defined(OPENSSL_NO_EC) */
         || !TEST_true(create_ssl_objects(sctx, cctx, &serverssl, &clientssl,
             NULL, NULL)))
         goto end;
@@ -881,7 +881,7 @@ static int test_sni_context_switch(int idx)
 #if defined(OPENSSL_NO_EC) && defined(OPENSSL_NO_DH)
     if (idx == 1)
         return TEST_skip("EC and DH are disabled");
-#endif
+#endif /* defined(OPENSSL_NO_EC) && defined(OPENSSL_NO_DH) */
 
     if (!TEST_true(create_ssl_ctx_pair(libctx, TLS_server_method(),
             TLS_client_method(), TLS1_3_VERSION, TLS1_3_VERSION,
@@ -920,7 +920,7 @@ static int test_sni_context_switch(int idx)
                 TLS_TEST_SHA256_NAME)))
             goto end;
         /* Trigger HRR after the context switch. */
-#ifndef OPENSSL_NO_EC
+#if !defined(OPENSSL_NO_EC)
         if (!TEST_true(SSL_CTX_set1_groups_list(cctx,
                 "secp521r1:secp384r1:prime256v1"))
             || !TEST_true(SSL_CTX_set1_groups_list(sctx,
@@ -930,7 +930,7 @@ static int test_sni_context_switch(int idx)
         if (!TEST_true(SSL_CTX_set1_groups_list(cctx, "ffdhe2048:ffdhe3072"))
             || !TEST_true(SSL_CTX_set1_groups_list(sctx, "ffdhe3072")))
             goto end;
-#endif
+#endif /* !defined(OPENSSL_NO_EC) */
     } else {
         if (!TEST_true(create_ssl_ctx_pair(libctx, TLS_server_method(), NULL,
                 TLS1_3_VERSION, TLS1_3_VERSION, &data.first, NULL,
@@ -1116,7 +1116,7 @@ end:
     return ret;
 }
 
-#ifndef OPENSSL_NO_TLS1_2
+#if !defined(OPENSSL_NO_TLS1_2)
 static int sni_policy_cb(SSL *ssl, int *alert, void *arg)
 {
     if (SSL_set_SSL_CTX(ssl, arg) == NULL) {
@@ -1125,7 +1125,7 @@ static int sni_policy_cb(SSL *ssl, int *alert, void *arg)
     }
     return SSL_TLSEXT_ERR_OK;
 }
-#endif
+#endif /* !defined(OPENSSL_NO_TLS1_2) */
 
 /*
  * The cipher list of an SSL_CTX selected by the servername callback applies
@@ -1136,7 +1136,7 @@ static int sni_policy_cb(SSL *ssl, int *alert, void *arg)
  */
 static int test_sni_switch_cipher_list_policy(int idx)
 {
-#ifdef OPENSSL_NO_TLS1_2
+#if defined(OPENSSL_NO_TLS1_2)
     return TEST_skip("TLS 1.2 is disabled");
 #else
     SSL_CTX *sctx = NULL, *cctx = NULL, *target = NULL;
@@ -1189,7 +1189,7 @@ end:
     SSL_CTX_free(target);
     ERR_clear_error();
     return ret;
-#endif
+#endif /* defined(OPENSSL_NO_TLS1_2) */
 }
 
 static int test_post_handshake_context_switch(void)
@@ -1403,7 +1403,7 @@ end:
 
 static int test_tls12_exclusion(void)
 {
-#ifdef OPENSSL_NO_TLS1_2
+#if defined(OPENSSL_NO_TLS1_2)
     return TEST_skip("TLS 1.2 is disabled");
 #else
     SSL_CTX *sctx = NULL, *cctx = NULL;
@@ -1432,12 +1432,12 @@ end:
     SSL_CTX_free(cctx);
     ERR_clear_error();
     return ret;
-#endif
+#endif /* defined(OPENSSL_NO_TLS1_2) */
 }
 
 static int test_quic_exclusion(void)
 {
-#ifndef OPENSSL_NO_QUIC
+#if !defined(OPENSSL_NO_QUIC)
     static const unsigned char wire_id[] = { 0xff, 0xa0 };
     SSL_CTX *ctx = NULL, *tlsctx = NULL;
     SSL *quic = NULL, *external = NULL;
@@ -1474,12 +1474,12 @@ end:
     return ret;
 #else
     return TEST_skip("QUIC is disabled");
-#endif
+#endif /* !defined(OPENSSL_NO_QUIC) */
 }
 
 static int test_dtls_exclusion(void)
 {
-#ifndef OPENSSL_NO_DTLS
+#if !defined(OPENSSL_NO_DTLS)
     static const unsigned char wire_id[] = { 0xff, 0xa0 };
     STACK_OF(SSL_CIPHER) *supported = NULL;
     SSL_CTX *ctx = NULL, *tlsctx = NULL;
@@ -1519,7 +1519,7 @@ end:
     return ret;
 #else
     return TEST_skip("DTLS is disabled");
-#endif
+#endif /* !defined(OPENSSL_NO_DTLS) */
 }
 
 static int test_provider_record_tamper(void)
@@ -1711,7 +1711,7 @@ end:
     ERR_clear_error();
     return ret;
 }
-#endif
+#endif /* !defined(OPENSSL_NO_SOCK) && !defined(OPENSSL_NO_KTLS) */
 
 static int test_provider_unload_lifetime(void)
 {
@@ -1836,7 +1836,7 @@ int setup_tests(void)
     ADD_TEST(test_provider_large_fragmented_record);
 #if !defined(OPENSSL_NO_SOCK) && !defined(OPENSSL_NO_KTLS)
     ADD_TEST(test_provider_ciphersuite_disables_ktls);
-#endif
+#endif /* !defined(OPENSSL_NO_SOCK) && !defined(OPENSSL_NO_KTLS) */
     ADD_TEST(test_late_provider_load_not_discovered);
     ADD_TEST(test_provider_unload_lifetime);
     return 1;

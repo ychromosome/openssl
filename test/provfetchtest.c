@@ -1,5 +1,5 @@
 /*
- * Copyright 2021-2023 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2021-2026 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -19,7 +19,7 @@
 #if defined(OPENSSL_THREADS) && !defined(CRYPTO_TDEBUG) \
     && !defined(OPENSSL_NO_THREAD_POOL)
 #include "threadstest.h"
-#endif
+#endif /* defined(OPENSSL_THREADS) && !defined(CRYPTO_TDEBUG) && !defined(OPENSSL_NO_THREAD_POOL) */
 
 #define CHILD_RANDOM_CHECK "child-random-check"
 
@@ -29,7 +29,7 @@ static int dummy_provider_init(const OSSL_CORE_HANDLE *handle,
     && !defined(OPENSSL_NO_THREAD_POOL)
 static int dummy_provider_init_deferred(const OSSL_CORE_HANDLE *handle,
     const OSSL_DISPATCH *in, const OSSL_DISPATCH **out, void **provctx);
-#endif
+#endif /* defined(OPENSSL_THREADS) && !defined(CRYPTO_TDEBUG) && !defined(OPENSSL_NO_THREAD_POOL) */
 
 static int dummy_decoder_decode(void *ctx, OSSL_CORE_BIO *cin, int selection,
     OSSL_CALLBACK *object_cb, void *object_cbarg,
@@ -235,6 +235,12 @@ static const OSSL_ALGORITHM *dummy_query(void *provctx, int operation_id,
     return NULL;
 }
 
+/**
+ * @brief Probe the child RNG and release its state on the calling thread.
+ * @param provctx Child library context to exercise.
+ * @param params Receives the probe result under CHILD_RANDOM_CHECK.
+ * @returns 1 if the result was stored or not requested, 0 on parameter failure.
+ */
 static int dummy_get_params(void *provctx, OSSL_PARAM params[])
 {
     OSSL_PARAM *param = OSSL_PARAM_locate(params, CHILD_RANDOM_CHECK);
@@ -266,6 +272,12 @@ static int child_teardown_worker_result;
 static int child_teardown_worker_ready;
 static int child_teardown_worker_release;
 
+/**
+ * @brief Exercise child-provider methods, then park until teardown is complete.
+ *
+ * Release child and parent per-thread state before signalling readiness. The
+ * parked worker must no longer use either context while the parent is freed.
+ */
 static void child_teardown_worker(void)
 {
     EVP_KEYMGMT *keymgmt = NULL;
@@ -291,6 +303,10 @@ static void child_teardown_worker(void)
     ossl_crypto_mutex_unlock(child_teardown_mutex);
 }
 
+/**
+ * @brief Check parent teardown after deferred child-provider use on a worker.
+ * @returns 1 on success, 0 on setup, provider-operation or thread-join failure.
+ */
 static int test_child_provider_method_teardown(void)
 {
     OSSL_LIB_CTX *libctx = NULL;
@@ -361,7 +377,7 @@ err:
     ossl_crypto_mutex_free(&child_teardown_mutex);
     return result;
 }
-#endif
+#endif /* defined(OPENSSL_THREADS) && !defined(CRYPTO_TDEBUG) && !defined(OPENSSL_NO_THREAD_POOL) */
 
 static int dummy_provider_init_common(const OSSL_CORE_HANDLE *handle,
     const OSSL_DISPATCH *in,
@@ -402,7 +418,7 @@ static int dummy_provider_init_deferred(const OSSL_CORE_HANDLE *handle,
 {
     return dummy_provider_init_common(handle, in, out, provctx, 0);
 }
-#endif
+#endif /* defined(OPENSSL_THREADS) && !defined(CRYPTO_TDEBUG) && !defined(OPENSSL_NO_THREAD_POOL) */
 
 /*
  * Try fetching and freeing various things.
@@ -480,7 +496,7 @@ int setup_tests(void)
 #if defined(OPENSSL_THREADS) && !defined(CRYPTO_TDEBUG) \
     && !defined(OPENSSL_NO_THREAD_POOL)
     ADD_TEST(test_child_provider_method_teardown);
-#endif
+#endif /* defined(OPENSSL_THREADS) && !defined(CRYPTO_TDEBUG) && !defined(OPENSSL_NO_THREAD_POOL) */
 
     return 1;
 }

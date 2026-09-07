@@ -1246,9 +1246,9 @@ static const OSSL_RECORD_METHOD *ssl_select_next_record_layer(SSL_CONNECTION *s,
     int direction,
     int level)
 {
-#ifndef OPENSSL_NO_KTLS
+#if !defined(OPENSSL_NO_KTLS)
     const SSL_CIPHER *cipher = s->s3.tmp.new_cipher;
-#endif
+#endif /* !defined(OPENSSL_NO_KTLS) */
 
     if (s->rlayer.custom_rlmethod != NULL)
         return s->rlayer.custom_rlmethod;

@@ -1465,7 +1465,7 @@ static int final_server_name(SSL_CONNECTION *s, unsigned int context, int sent)
      * TLS 1.3 selects its ciphersuite before final SNI processing. A callback
      * may have changed the per-connection ciphersuite list since selection.
      */
-#ifndef OPENSSL_NO_TLS1_3
+#if !defined(OPENSSL_NO_TLS1_3)
     if (s->server && SSL_CONNECTION_IS_VERSION13(s)
         && s->s3.tmp.new_cipher != NULL
         && s->s3.tmp.new_cipher->origin == SSL_CIPHER_ORIGIN_PROVIDER) {
@@ -1477,7 +1477,7 @@ static int final_server_name(SSL_CONNECTION *s, unsigned int context, int sent)
         }
         s->s3.tmp.new_cipher = cipher;
     }
-#endif
+#endif /* !defined(OPENSSL_NO_TLS1_3) */
 
     return 1;
 }

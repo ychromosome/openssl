@@ -126,18 +126,10 @@ OpenSSL 4.1
    *Mounir IDRASSI*
 
  * Added provider-defined TLS 1.3 ciphersuites through the
-   `TLS-CIPHERSUITE` capability. Descriptors name an AEAD and transcript digest
-   fetched with the SSL_CTX library context and property query. Provider suites
-   require explicit selection. Sessions that have held one cannot be resumed,
-   cached, serialised or ticketed:
-   SSL_SESSION_is_resumable() returns 0, and SSL_CTX_add_session(),
-   SSL_set_session(), i2d_SSL_SESSION() and SSL_new_session_ticket() fail.
-   SSL_SESSION_set_cipher() rejects provider-defined ciphersuites.
-   External-PSK callbacks reject such sessions; provider-backed external PSK
-   and 0-RTT are not supported. Provider AEADs must enforce their own per-key
-   record limits. Provider suites do not use kTLS. Each SSL_CTX accepts at most
-   128 provider suites; duplicate provider wire IDs in a peer list are discarded
-   before selection.
+   `TLS-CIPHERSUITE` capability, with explicit selection and unchanged built-in
+   defaults. These sessions cannot be resumed, cached, serialised or ticketed.
+   Provider-backed external PSK and 0-RTT are unsupported, as are DTLS, QUIC and
+   kTLS. See provider-base(7) for the capability contract.
 
    *Martin Wolf*
 

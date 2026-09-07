@@ -234,7 +234,7 @@ static int test_resume_into_provider_suite(int idx)
 #if defined(OPENSSL_NO_EC) && defined(OPENSSL_NO_DH)
     if (with_hrr)
         return TEST_skip("EC and DH are disabled");
-#endif
+#endif /* defined(OPENSSL_NO_EC) && defined(OPENSSL_NO_DH) */
 
     snprintf(both, sizeof(both), "%s:%s", v->provname, v->builtinname);
 
@@ -268,7 +268,7 @@ static int test_resume_into_provider_suite(int idx)
         goto end;
     SSL_CTX_set_options(sctx, SSL_OP_SERVER_PREFERENCE);
     if (with_hrr
-#ifndef OPENSSL_NO_EC
+#if !defined(OPENSSL_NO_EC)
         && (!TEST_true(SSL_CTX_set1_groups_list(cctx,
                 "secp521r1:secp384r1:prime256v1"))
             || !TEST_true(SSL_CTX_set1_groups_list(sctx,
@@ -277,7 +277,7 @@ static int test_resume_into_provider_suite(int idx)
         && (!TEST_true(SSL_CTX_set1_groups_list(cctx,
                 "ffdhe2048:ffdhe3072"))
             || !TEST_true(SSL_CTX_set1_groups_list(sctx, "ffdhe3072"))))
-#endif
+#endif /* !defined(OPENSSL_NO_EC) */
         goto end;
     reset_counters();
     if (!TEST_true(create_ssl_objects(sctx, cctx, &serverssl, &clientssl,
