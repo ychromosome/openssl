@@ -1771,6 +1771,23 @@ static int set_client_ciphersuite(SSL_CONNECTION *s,
     }
 
     /*
+     * Isolate a shared ticket before a provider suite changes its cipher and
+     * resumption policy. External PSKs already have a private, ticketless copy
+     * from tls_parse_stoc_psk(). Leave ordinary built-in resumption unchanged.
+     */
+    if (s->hit && c->origin == SSL_CIPHER_ORIGIN_PROVIDER
+        && s->session->ext.tick != NULL) {
+        SSL_SESSION *sesstmp = ssl_session_dup(s->session, 0);
+
+        if (sesstmp == NULL) {
+            SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_INTERNAL_ERROR);
+            return 0;
+        }
+        SSL_SESSION_free(s->session);
+        s->session = sesstmp;
+    }
+
+    /*
      * Depending on the session caching (internal/external), the cipher
      * and/or cipher_id values may not be set. Make sure that cipher_id is
      * set and use it for comparison.

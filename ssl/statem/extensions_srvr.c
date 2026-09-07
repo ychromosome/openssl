@@ -1507,7 +1507,8 @@ int tls_parse_ctos_psk(SSL_CONNECTION *s, PACKET *pkt, unsigned int context,
                 continue;
             }
 
-            if (stateful) {
+            if (stateful
+                && s->s3.tmp.new_cipher->origin == SSL_CIPHER_ORIGIN_PROVIDER) {
                 SSL_SESSION *sesstmp = ssl_session_dup(sess, 1);
 
                 if (sesstmp == NULL) {

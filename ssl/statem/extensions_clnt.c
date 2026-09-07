@@ -2456,13 +2456,6 @@ int tls_parse_stoc_psk(SSL_CONNECTION *s, PACKET *pkt,
      * sent two tickets, or if we didn't send a PSK ticket.
      */
     if (identity == 0 && (s->psksession == NULL || s->ext.tick_identity == 2)) {
-        /* The application may share its ticket session across SSL objects. */
-        if ((sesstmp = ssl_session_dup(s->session, 0)) == NULL) {
-            SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_INTERNAL_ERROR);
-            return 0;
-        }
-        SSL_SESSION_free(s->session);
-        s->session = sesstmp;
         s->hit = 1;
         SSL_SESSION_free(s->psksession);
         s->psksession = NULL;

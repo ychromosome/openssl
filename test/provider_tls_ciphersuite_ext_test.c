@@ -70,6 +70,15 @@ static void reset_counters(void)
 static SSL_SESSION *captured_session;
 static SSL_SESSION *captured_server_session;
 static SSL_SESSION *external_cache_session;
+static int session_dup_index, client_session_dups, server_session_dups;
+
+static int count_session_dup(CRYPTO_EX_DATA *to, const CRYPTO_EX_DATA *from,
+    void **from_data, int idx, long argl, void *argp)
+{
+    if (*from_data != NULL)
+        ++*(int *)*from_data;
+    return 1;
+}
 
 static int capture_session_cb(SSL *ssl, SSL_SESSION *sess)
 {
@@ -140,6 +149,76 @@ static int check_negotiated(SSL *serverssl, SSL *clientssl, unsigned int cp,
         && TEST_int_eq(cc->origin, expect_origin)
         && exchange_data(clientssl, serverssl, msg, sizeof(msg))
         && exchange_data(serverssl, clientssl, msg, sizeof(msg));
+}
+
+/* Built-in resumption must not acquire the provider-transition session copies. */
+static int test_builtin_resumption_copies(int stateful)
+{
+    SSL_CTX *sctx = NULL, *cctx = NULL;
+    SSL *serverssl = NULL, *clientssl = NULL;
+    SSL_SESSION *sess = NULL, *cached = NULL;
+    static const unsigned char msg[] = "resumed";
+    int ret = 0;
+
+    if (!make_pair(BUILTIN_SHA256_NAME, BUILTIN_SHA256_NAME, cert, privkey,
+            &sctx, &cctx)
+        || !TEST_true(SSL_CTX_set_num_tickets(sctx, 1)))
+        goto end;
+    if (stateful)
+        SSL_CTX_set_options(sctx, SSL_OP_NO_TICKET);
+    SSL_CTX_sess_set_new_cb(sctx, capture_server_session_cb);
+    SSL_CTX_set_session_cache_mode(cctx,
+        SSL_SESS_CACHE_CLIENT | SSL_SESS_CACHE_NO_INTERNAL_STORE);
+    SSL_CTX_sess_set_new_cb(cctx, capture_session_cb);
+    if (!TEST_true(create_ssl_objects(sctx, cctx, &serverssl, &clientssl,
+            NULL, NULL))
+        || !TEST_true(create_ssl_connection(serverssl, clientssl,
+            SSL_ERROR_NONE))
+        || !TEST_false(SSL_session_reused(clientssl))
+        || !TEST_ptr(captured_session)
+        || !TEST_true(SSL_SESSION_is_resumable(captured_session)))
+        goto end;
+    sess = captured_session;
+    captured_session = NULL;
+    cached = captured_server_session;
+    captured_server_session = NULL;
+    shutdown_ssl_connection(serverssl, clientssl);
+    serverssl = clientssl = NULL;
+
+    if (!TEST_true(SSL_SESSION_set_ex_data(sess, session_dup_index,
+            &client_session_dups))
+        || (stateful
+            && (!TEST_ptr(cached)
+                || !TEST_true(SSL_SESSION_set_ex_data(cached, session_dup_index,
+                    &server_session_dups)))))
+        goto end;
+    client_session_dups = server_session_dups = 0;
+    if (!TEST_true(create_ssl_objects(sctx, cctx, &serverssl, &clientssl,
+            NULL, NULL))
+        || !TEST_true(SSL_set_session(clientssl, sess))
+        || !TEST_true(create_ssl_connection(serverssl, clientssl,
+            SSL_ERROR_NONE))
+        || !TEST_true(SSL_session_reused(serverssl))
+        || !TEST_true(SSL_session_reused(clientssl))
+        || !exchange_data(serverssl, clientssl, msg, sizeof(msg)))
+        goto end;
+
+    /* Upstream copies once per peer when issuing/receiving the new ticket. */
+    ret = TEST_int_eq(client_session_dups, 1);
+    if (stateful)
+        ret &= TEST_int_eq(server_session_dups, 1);
+end:
+    SSL_SESSION_free(sess);
+    SSL_SESSION_free(cached);
+    SSL_SESSION_free(captured_session);
+    captured_session = NULL;
+    SSL_SESSION_free(captured_server_session);
+    captured_server_session = NULL;
+    SSL_free(serverssl);
+    SSL_free(clientssl);
+    SSL_CTX_free(sctx);
+    SSL_CTX_free(cctx);
+    return ret;
 }
 
 static int test_resume_into_provider_suite(int idx)
@@ -518,9 +597,14 @@ static int test_builtin_external_psk_into_provider_suite(void)
     if (!TEST_true(create_ssl_objects(sctx, cctx, &serverssl, &clientssl,
             NULL, NULL))
         || !TEST_ptr(clientpsk = make_builtin_psk(clientssl, v))
-        || !TEST_ptr(serverpsk = make_builtin_psk(serverssl, v)))
+        || !TEST_ptr(serverpsk = make_builtin_psk(serverssl, v))
+        || !TEST_true(SSL_SESSION_set_ex_data(clientpsk, session_dup_index,
+            &client_session_dups))
+        || !TEST_true(SSL_SESSION_set_ex_data(serverpsk, session_dup_index,
+            &server_session_dups)))
         goto end;
 
+    client_session_dups = server_session_dups = 0;
     reset_counters();
     SSL_set_msg_callback(clientssl, wire_cb);
     SSL_set_msg_callback(serverssl, wire_cb);
@@ -541,7 +625,10 @@ static int test_builtin_external_psk_into_provider_suite(void)
         || !TEST_int_eq(SSL_SESSION_get0_cipher(serverpsk)->origin,
             SSL_CIPHER_ORIGIN_STATIC)
         || !TEST_false(clientpsk->provider_cipher_seen)
-        || !TEST_false(serverpsk->provider_cipher_seen))
+        || !TEST_false(serverpsk->provider_cipher_seen)
+        /* The client also copies to record the newly negotiated key-share group. */
+        || !TEST_int_eq(client_session_dups, 2)
+        || !TEST_int_eq(server_session_dups, 1))
         goto end;
 
     ret = 1;
@@ -1179,6 +1266,12 @@ int setup_tests(void)
             "tls-provider", "valid-both", "?provider=tls-provider")))
         return 0;
 
+    if (!TEST_int_ge(session_dup_index = SSL_SESSION_get_ex_new_index(0, NULL,
+                         NULL, count_session_dup, NULL),
+            0))
+        return 0;
+
+    ADD_ALL_TESTS(test_builtin_resumption_copies, 2);
     ADD_ALL_TESTS(test_resume_into_provider_suite, 4);
     ADD_TEST(test_stateful_cache_provider_transition);
     ADD_TEST(test_external_cache_rejects_provider_session);
