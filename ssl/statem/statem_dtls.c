@@ -184,8 +184,10 @@ static int dtls1_write_hm_header(unsigned char *msgheaderstart,
         || !WPACKET_put_bytes_u24(&msgheader, fraglen)
         || !WPACKET_get_total_written(&msgheader, &msgheaderlen)
         || msgheaderlen != DTLS1_HM_HEADER_LENGTH
-        || !WPACKET_finish(&msgheader))
+        || !WPACKET_finish(&msgheader)) {
+        WPACKET_cleanup(&msgheader);
         return 0;
+    }
 
     return 1;
 }
@@ -434,6 +436,8 @@ int dtls_get_message(SSL_CONNECTION *s, int *mt)
 
 again:
     if (!dtls_get_reassembled_message(s, &errtype, &tmplen)) {
+        if (s->statem.ack_for_retransmit)
+            return 0;
         if (errtype == DTLS1_HM_BAD_FRAGMENT
             || errtype == DTLS1_HM_FRAGMENT_RETRY) {
             /* bad fragment received */
@@ -844,6 +848,18 @@ static int dtls1_process_out_of_seq_message(SSL_CONNECTION *s,
                 goto err;
             frag_len -= readbytes;
         }
+        /*
+         * A lost ACK can cause an already processed post-handshake message to
+         * be retransmitted in a new record. ACK it without processing it again.
+         */
+        if (SSL_CONNECTION_IS_DTLS13(s)
+            && s->s3.tmp.record_epoch >= 3
+            && msg_hdr->seq < s->d1->handshake_read_seq
+            && dtls_msg_needs_ack(!s->server, msg_hdr->type)) {
+            if (!add_record_to_ack_list(s))
+                goto err;
+            s->statem.ack_for_retransmit = 1;
+        }
     } else {
         if (frag_len != msg_hdr->msg_len) {
             return dtls1_reassemble_fragment(s, msg_hdr);
@@ -874,8 +890,11 @@ static int dtls1_process_out_of_seq_message(SSL_CONNECTION *s,
             goto err;
 
         if (dtls_msg_needs_ack(!s->server, msg_hdr->type)
-            && !add_record_to_ack_list(s))
+            && !add_record_to_ack_list(s)) {
+            pitem_free(item);
+            item = NULL;
             goto err;
+        }
 
         item = pqueue_insert(&s->d1->rcvd_messages, item);
         /*
@@ -1026,14 +1045,20 @@ redo:
         goto f_err;
     }
     if (recvd_type == SSL3_RT_ACK) {
-        if (readbytes == DTLS1_HM_HEADER_LENGTH) {
+        /*
+         * An ACK has no message header: the bytes already read are body, and
+         * an ACK never spans records, so read the rest of this one. If that
+         * first read already exhausted the record there is no more body to
+         * read, and asking would fetch an unrelated record.
+         */
+        if (readbytes == DTLS1_HM_HEADER_LENGTH
+            && s->rlayer.curr_rec < s->rlayer.num_recs) {
             const size_t first_readbytes = readbytes;
 
             p += DTLS1_HM_HEADER_LENGTH;
 
             i = ssl->method->ssl_read_bytes(ssl, SSL3_RT_HANDSHAKE, NULL, p,
-                s->init_num - DTLS1_HM_HEADER_LENGTH,
-                0, &readbytes);
+                s->rlayer.tlsrecs[s->rlayer.curr_rec].length, 0, &readbytes);
             readbytes += first_readbytes;
             /*
              * This shouldn't ever fail due to NBIO because we already checked
@@ -1236,11 +1261,13 @@ CON_FUNC_RETURN dtls_construct_ack(SSL_CONNECTION *s, WPACKET *pkt)
 
         recnumnext = ossl_list_record_number_next(recnum);
 
-        if (recnum->epoch <= dtls1_get_epoch(s, SSL3_CC_WRITE)) {
+        if (!SSL_IS_FIRST_HANDSHAKE(s)
+            || recnum->epoch <= dtls1_get_epoch(s, SSL3_CC_WRITE)) {
             /*
              * rfc9147:
              * During the handshake, ACK records MUST be sent with an epoch which
-             * is equal to or higher than the record which is being acknowledged
+             * is equal to or higher than the record which is being acknowledged.
+             * After the handshake, the sending and receiving epochs can differ.
              */
             if (!WPACKET_put_bytes_u64(pkt, recnum->epoch)
                 || !WPACKET_put_bytes_u64(pkt, recnum->seqnum)) {
@@ -1265,7 +1292,7 @@ MSG_PROCESS_RETURN dtls_process_ack(SSL_CONNECTION *s, PACKET *pkt)
 {
     PACKET record_numbers;
 
-    if (!PACKET_get_length_prefixed_2(pkt, &record_numbers)) {
+    if (!PACKET_as_length_prefixed_2(pkt, &record_numbers)) {
         SSLfatal(s, SSL_AD_ILLEGAL_PARAMETER, SSL_R_LENGTH_TOO_LONG);
         return MSG_PROCESS_ERROR;
     }
@@ -1308,6 +1335,10 @@ MSG_PROCESS_RETURN dtls_process_ack(SSL_CONNECTION *s, PACKET *pkt)
             }
         }
     }
+
+    /* Keep the retransmit timer running until the whole flight is ACKed. */
+    if (dtls_any_sent_messages_are_missing_acknowledge(s))
+        return MSG_PROCESS_CONTINUE_READING;
 
     return MSG_PROCESS_FINISHED_READING;
 }

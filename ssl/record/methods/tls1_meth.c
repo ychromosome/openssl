@@ -1,5 +1,5 @@
 /*
- * Copyright 2022-2025 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2022-2026 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -175,8 +175,9 @@ static int setup_record_header(const OSSL_RECORD_LAYER *rl, TLS_RL_RECORD *rec,
     WPACKET hdr;
     size_t hdrsize;
 
-    if (buflen < EVP_AEAD_TLS1_AAD_LEN
-        || !WPACKET_init_static_len(&hdr, buf, EVP_AEAD_TLS1_AAD_LEN, 0)
+    if (buflen < EVP_AEAD_TLS1_AAD_LEN)
+        return 0;
+    if (!WPACKET_init_static_len(&hdr, buf, EVP_AEAD_TLS1_AAD_LEN, 0)
         || (rl->isdtls && !WPACKET_put_bytes_u16(&hdr, rl->epoch))
         || (rl->isdtls ? !WPACKET_put_bytes_u48(&hdr, rl->sequence)
                        : !WPACKET_put_bytes_u64(&hdr, rl->sequence))

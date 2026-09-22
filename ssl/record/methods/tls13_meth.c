@@ -1,5 +1,5 @@
 /*
- * Copyright 2022-2025 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2022-2026 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -347,9 +347,9 @@ static int tls13_post_process_record(OSSL_RECORD_LAYER *rl, TLS_RL_RECORD *rec)
         size_t end;
 
         if (rec->length == 0
-                    || rl->isdtls
-                ? !DTLS13_UNI_HDR_FIX_BITS_IS_SET(rec->type)
-                : rec->type != SSL3_RT_APPLICATION_DATA) {
+            || (rl->isdtls
+                    ? !DTLS13_UNI_HDR_FIX_BITS_IS_SET(rec->type)
+                    : rec->type != SSL3_RT_APPLICATION_DATA)) {
             RLAYERfatal(rl, SSL_AD_UNEXPECTED_MESSAGE,
                 SSL_R_BAD_RECORD_TYPE);
             return 0;
