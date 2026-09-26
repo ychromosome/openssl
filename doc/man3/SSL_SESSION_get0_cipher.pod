@@ -41,7 +41,8 @@ the provider-cipher marker but preserves an existing non-resumable state.
 SSL_SESSION_get0_cipher() returns the SSL_CIPHER associated with the SSL_SESSION
 or NULL if it cannot be determined.
 
-SSL_SESSION_set_cipher() returns 1 on success or 0 on failure.
+SSL_SESSION_set_cipher() returns 1 on success or 0 on failure, including when
+B<s> is NULL.
 
 =head1 SEE ALSO
 

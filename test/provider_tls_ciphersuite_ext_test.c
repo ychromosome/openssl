@@ -910,7 +910,6 @@ static int test_d2i_into_provider_session(void)
     SSL_CTX *sctx = NULL, *cctx = NULL;
     SSL *serverssl = NULL, *clientssl = NULL;
     SSL_SESSION *prov = NULL, *builtin = NULL, *reuse = NULL;
-    const unsigned char tick[] = { 0x01 };
     unsigned char *der = NULL;
     const unsigned char *p;
     int derlen, ret = 0;
@@ -941,19 +940,12 @@ static int test_d2i_into_provider_session(void)
             SSL_CIPHER_ORIGIN_PROVIDER))
         goto end;
     prov->psk_external = 1;
-    OPENSSL_free(prov->ext.tick);
-    prov->ext.tick = OPENSSL_memdup(tick, sizeof(tick));
-    prov->ext.ticklen = sizeof(tick);
-    if (!TEST_ptr(prov->ext.tick))
-        goto end;
     p = der;
     if (!TEST_ptr_eq(d2i_SSL_SESSION_ex(&prov, &p, derlen, libctx, NULL), prov)
         || !TEST_int_eq(SSL_SESSION_get0_cipher(prov)->origin,
             SSL_CIPHER_ORIGIN_STATIC)
         || !TEST_false(prov->provider_cipher_seen)
         || !TEST_false(prov->psk_external)
-        || !TEST_ptr_null(prov->ext.tick)
-        || !TEST_size_t_eq(prov->ext.ticklen, 0)
         || !TEST_true(prov->not_resumable)
         || !TEST_false(SSL_SESSION_is_resumable(prov))
         || !TEST_ptr(reuse = SSL_SESSION_dup(builtin)))

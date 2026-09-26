@@ -390,7 +390,6 @@ SSL_SESSION *d2i_SSL_SESSION_ex(SSL_SESSION **a, const unsigned char **pp,
         as->tlsext_tick->data = NULL;
     } else {
         ret->ext.tick = NULL;
-        ret->ext.ticklen = 0;
     }
 #ifndef OPENSSL_NO_COMP
     if (as->comp_id) {

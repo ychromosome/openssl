@@ -706,6 +706,63 @@ end:
     return ret;
 }
 
+static int test_public_argument_null(int idx)
+{
+    static const unsigned char wire_id[] = { 0x13, 0x01 };
+    SSL_CTX *ctx = NULL;
+    SSL *ssl = NULL;
+    SSL_SESSION *session = NULL;
+    int rejected = 0, ret = 0;
+
+    if (!TEST_ptr(ctx = SSL_CTX_new_ex(libctx, NULL, TLS_method()))
+        || !TEST_ptr(ssl = SSL_new(ctx))
+        || !TEST_ptr(session = SSL_SESSION_new()))
+        goto end;
+
+    ERR_clear_error();
+    switch (idx) {
+    case 0:
+        rejected = !SSL_CTX_add_session(NULL, session);
+        break;
+    case 1:
+        rejected = !SSL_CTX_add_session(ctx, NULL);
+        break;
+    case 2:
+        rejected = !SSL_SESSION_set_cipher(NULL, NULL);
+        break;
+    case 3:
+        rejected = !SSL_SESSION_is_resumable(NULL);
+        break;
+    case 4:
+        rejected = SSL_CIPHER_find(NULL, wire_id) == NULL;
+        break;
+    case 5:
+        rejected = SSL_CIPHER_find(ssl, NULL) == NULL;
+        break;
+    case 6:
+        rejected = SSL_CIPHER_get_digest_nid(NULL) == NID_undef;
+        break;
+    case 7:
+        rejected = SSL_CIPHER_get_handshake_digest(NULL) == NULL;
+        break;
+    default:
+        goto end;
+    }
+    if (!TEST_true(rejected)
+        || !TEST_int_eq(ERR_GET_LIB(ERR_peek_last_error()), ERR_LIB_SSL)
+        || !TEST_int_eq(ERR_GET_REASON(ERR_peek_last_error()),
+            ERR_R_PASSED_NULL_PARAMETER))
+        goto end;
+
+    ret = 1;
+end:
+    SSL_SESSION_free(session);
+    SSL_free(ssl);
+    SSL_CTX_free(ctx);
+    ERR_clear_error();
+    return ret;
+}
+
 static int test_ssl_ciphersuites_mfail(int idx)
 {
     SSL_CTX *ctx = NULL;
@@ -1935,6 +1992,7 @@ int setup_tests(void)
     ADD_TEST(test_property_query_exclusion);
     ADD_TEST(test_provider_composition);
     ADD_ALL_TESTS(test_ciphersuite_setter_null, 4);
+    ADD_ALL_TESTS(test_public_argument_null, 8);
     ADD_MFAIL_SAMPLED_NO_CHECK_TEST(test_provider_discovery_mfail, 64);
     ADD_MFAIL_SAMPLED_ALL_NO_CHECK_TESTS(test_ssl_ciphersuites_mfail, 6, 64);
     ADD_TEST(test_provider_hrr);

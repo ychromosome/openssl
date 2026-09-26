@@ -51,7 +51,8 @@ The following values are returned by all functions:
 
 The operation failed. For SSL_CTX_add_session(), this includes the same
 SSL_SESSION object already present in the cache or a session that has used a
-provider-defined ciphersuite; see L<provider-base(7)>. For
+provider-defined ciphersuite, or a NULL B<ctx> or B<c>; see
+L<provider-base(7)>. For
 SSL_CTX_remove_session(), the session was not found in the cache.
 
 =item Z<>1

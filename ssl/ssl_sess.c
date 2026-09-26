@@ -798,6 +798,10 @@ int SSL_CTX_add_session(SSL_CTX *ctx, SSL_SESSION *c)
     int ret = 0;
     SSL_SESSION *s;
 
+    if (ctx == NULL || c == NULL) {
+        ERR_raise(ERR_LIB_SSL, ERR_R_PASSED_NULL_PARAMETER);
+        return 0;
+    }
     if (c->provider_cipher_seen) {
         ERR_raise(ERR_LIB_SSL,
             SSL_R_PROVIDER_CIPHERSUITE_SESSION_UNSUPPORTED);
@@ -1128,6 +1132,10 @@ const SSL_CIPHER *SSL_SESSION_get0_cipher(const SSL_SESSION *s)
 
 int SSL_SESSION_set_cipher(SSL_SESSION *s, const SSL_CIPHER *cipher)
 {
+    if (s == NULL) {
+        ERR_raise(ERR_LIB_SSL, ERR_R_PASSED_NULL_PARAMETER);
+        return 0;
+    }
     if (cipher != NULL && cipher->origin == SSL_CIPHER_ORIGIN_PROVIDER) {
         ERR_raise(ERR_LIB_SSL,
             SSL_R_PROVIDER_CIPHERSUITE_SESSION_UNSUPPORTED);
@@ -1236,6 +1244,10 @@ int SSL_SESSION_set1_id_context(SSL_SESSION *s, const unsigned char *sid_ctx,
 
 int SSL_SESSION_is_resumable(const SSL_SESSION *s)
 {
+    if (s == NULL) {
+        ERR_raise(ERR_LIB_SSL, ERR_R_PASSED_NULL_PARAMETER);
+        return 0;
+    }
     /*
      * In the case of EAP-FAST, we can have a pre-shared "ticket" without a
      * session ID.

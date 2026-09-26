@@ -1454,7 +1454,7 @@ EXT_RETURN tls_construct_ctos_psk(SSL_CONNECTION *s, WPACKET *pkt,
     size_t binderoffset, msglen;
     int reshashsize = 0, pskhashsize = 0;
     unsigned char *resbinder = NULL, *pskbinder = NULL, *msgstart = NULL;
-    const EVP_MD *handmd = NULL, *mdres = NULL, *mdpsk = NULL;
+    const EVP_MD *mdres = NULL, *mdpsk = NULL;
     int dores = 0;
     SSL_CTX *sctx = SSL_CONNECTION_GET_CTX(s);
     const int version1_3 = SSL_CONNECTION_IS_DTLS(s) ? DTLS1_3_VERSION : TLS1_3_VERSION;
@@ -1484,9 +1484,6 @@ EXT_RETURN tls_construct_ctos_psk(SSL_CONNECTION *s, WPACKET *pkt,
     if (s->hello_retry_request == SSL_HRR_PENDING
         && (s->ext.extflags[TLSEXT_IDX_psk] & SSL_EXT_FLAG_SENT) == 0)
         return EXT_RETURN_NOT_SENT;
-
-    if (s->hello_retry_request == SSL_HRR_PENDING)
-        handmd = ssl_handshake_md(s);
 
     if (s->session->ext.ticklen != 0
         && !s->session->provider_cipher_seen) {

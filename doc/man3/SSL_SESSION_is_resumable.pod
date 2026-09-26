@@ -24,7 +24,8 @@ see L<provider-base(7)>.
 
 =head1 RETURN VALUES
 
-SSL_SESSION_is_resumable() returns 1 if the session is resumable or 0 otherwise.
+SSL_SESSION_is_resumable() returns 1 if the session is resumable or 0 otherwise,
+including when B<s> is NULL.
 
 =head1 SEE ALSO
 
