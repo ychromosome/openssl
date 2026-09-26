@@ -34,6 +34,9 @@ OpenSSL 4.2
     be resumed, cached, serialised or ticketed. Provider suites are unavailable
     for kTLS, DTLS and QUIC.
 
+  * Added support for Java keytool PKCS#12 files with symmetric keys.
+    New API `PKCS12_parse_ex()` with `PKCS12_PARSE_CTX` has been added.
+
 OpenSSL 4.1
 -----------
 

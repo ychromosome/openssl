@@ -2384,8 +2384,10 @@ const SSL_CIPHER *SSL_CIPHER_find(SSL *ssl, const unsigned char *ptr)
 {
     const SSL_CIPHER *cipher;
 
-    if (ssl == NULL)
+    if (ssl == NULL || ptr == NULL) {
+        ERR_raise(ERR_LIB_SSL, ERR_R_PASSED_NULL_PARAMETER);
         return NULL;
+    }
     cipher = ssl->method->get_cipher_by_char(ptr);
     if (cipher != NULL)
         return cipher;
@@ -2410,6 +2412,10 @@ int SSL_CIPHER_get_digest_nid(const SSL_CIPHER *c)
 {
     int i;
 
+    if (c == NULL) {
+        ERR_raise(ERR_LIB_SSL, ERR_R_PASSED_NULL_PARAMETER);
+        return NID_undef;
+    }
     if (c->origin == SSL_CIPHER_ORIGIN_PROVIDER)
         return NID_undef;
     i = ssl_cipher_info_lookup(ssl_cipher_table_mac, c->algorithm_mac);
@@ -2448,16 +2454,30 @@ int ssl_get_md_idx(int md_nid)
     return -1;
 }
 
-const EVP_MD *SSL_CIPHER_get_handshake_digest(const SSL_CIPHER *c)
+int ssl_cipher_get_handshake_digest_nid(const SSL_CIPHER *c)
 {
     int idx = c->algorithm2 & SSL_HANDSHAKE_MAC_MASK;
 
+    if (idx < 0 || idx >= SSL_MD_NUM_IDX)
+        return NID_undef;
+    return ssl_cipher_table_mac[idx].nid;
+}
+
+const EVP_MD *SSL_CIPHER_get_handshake_digest(const SSL_CIPHER *c)
+{
+    int nid;
+
+    if (c == NULL) {
+        ERR_raise(ERR_LIB_SSL, ERR_R_PASSED_NULL_PARAMETER);
+        return NULL;
+    }
     if (c->origin == SSL_CIPHER_ORIGIN_PROVIDER)
         return c->provider_digest;
+    nid = ssl_cipher_get_handshake_digest_nid(c);
 
-    if (idx < 0 || idx >= SSL_MD_NUM_IDX)
+    if (nid == NID_undef)
         return NULL;
-    return EVP_get_digestbynid(ssl_cipher_table_mac[idx].nid);
+    return EVP_get_digestbynid(nid);
 }
 
 int SSL_CIPHER_is_aead(const SSL_CIPHER *c)

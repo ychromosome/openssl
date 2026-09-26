@@ -5341,9 +5341,29 @@ static int early_data_skip_helper(int testdtls, int testtype, int cipher, int id
         SSL_CTX_set_security_level(cctx, 0);
     }
 
-    if (!TEST_true(SSL_CTX_set_ciphersuites(sctx, ciphersuites[cipher]))
-        || !TEST_true(SSL_CTX_set_ciphersuites(cctx, ciphersuites[cipher])))
+    if (!TEST_true(SSL_CTX_set_ciphersuites(sctx, ciphersuites[cipher])))
         goto end;
+    if (idx == 2) {
+        /*
+         * The external PSK (see create_a_psk) is stamped with a fixed
+         * ciphersuite that need not be the one under test.  For the client to
+         * offer 0-RTT that ciphersuite must be among those it offers, so offer
+         * it alongside the ciphersuite under test.  The server offers only the
+         * ciphersuite under test, so the one it selects differs from the PSK's
+         * whenever the two are not the same.
+         */
+        char clientsuites[128];
+
+        snprintf(clientsuites, sizeof(clientsuites), "%s:%s",
+            ciphersuites[cipher],
+            (cipher == 2 || cipher == 6)
+                ? "TLS_AES_256_GCM_SHA384"
+                : "TLS_AES_128_GCM_SHA256");
+        if (!TEST_true(SSL_CTX_set_ciphersuites(cctx, clientsuites)))
+            goto end;
+    } else if (!TEST_true(SSL_CTX_set_ciphersuites(cctx, ciphersuites[cipher]))) {
+        goto end;
+    }
 
     if (!TEST_true(setupearly_data_test(&cctx, &sctx, &clientssl,
             &serverssl, &sess, idx,
@@ -5755,7 +5775,7 @@ static int test_early_data_psk(int idx)
 #define BADALPNLEN 8
 #define GOODALPN (alpnlist)
 #define BADALPN (alpnlist + GOODALPNLEN)
-    int err = 0;
+    int err = 0, suppressed = 0;
     unsigned char buf[20];
     size_t readbytes, written;
     int readearlyres = SSL_READ_EARLY_DATA_SUCCESS, connectres = 1;
@@ -5801,8 +5821,12 @@ static int test_early_data_psk(int idx)
         break;
 
     case 1:
-        /* Set inconsistent ALPN (early client detection) */
-        err = SSL_R_INCONSISTENT_EARLY_DATA_ALPN;
+        /*
+         * Inconsistent ALPN, detected by the client before it sends: the
+         * offered ALPN cannot include the session's, so the client suppresses
+         * 0-RTT and completes a full handshake instead of failing.
+         */
+        suppressed = 1;
         /* SSL_set_alpn_protos returns 0 for success and 1 for failure */
         if (!TEST_true(SSL_SESSION_set1_alpn_selected(sess, GOODALPN,
                 GOODALPNLEN))
@@ -5902,6 +5926,25 @@ static int test_early_data_psk(int idx)
                 &written))
             || !TEST_int_eq(SSL_get_error(clientssl, 0), SSL_ERROR_SSL)
             || !TEST_int_eq(ERR_GET_REASON(ERR_get_error()), err))
+            goto end;
+    } else if (suppressed) {
+        /*
+         * The client suppresses 0-RTT: the first SSL_write_early_data() writes
+         * the ClientHello (without early data) and reports "retry".  The server
+         * sees no early data, and both ends complete a full handshake with the
+         * early data reported as rejected on the client.
+         */
+        if (!TEST_false(SSL_write_early_data(clientssl, MSG1, strlen(MSG1),
+                &written))
+            || !TEST_int_eq(SSL_get_error(clientssl, 0), SSL_ERROR_WANT_READ)
+            || !TEST_int_eq(SSL_read_early_data(serverssl, buf, sizeof(buf),
+                                &readbytes),
+                SSL_READ_EARLY_DATA_FINISH)
+            || !TEST_size_t_eq(readbytes, 0)
+            || !TEST_true(create_ssl_connection(serverssl, clientssl,
+                SSL_ERROR_NONE))
+            || !TEST_int_eq(SSL_get_early_data_status(clientssl),
+                SSL_EARLY_DATA_REJECTED))
             goto end;
     } else {
         OSSL_TIME timer = ossl_time_now();
@@ -6243,11 +6286,14 @@ static int test_early_data_psk_cipher_mismatch(void)
         goto end;
 
     /*
-     * The PSK is bound to AES-128-GCM (SHA256 digest), but both ends can
-     * only negotiate ChaCha20-Poly1305 -- same digest, different cipher.
+     * The PSK is bound to AES-128-GCM (SHA256 digest).  The client offers
+     * both AES-128-GCM and ChaCha20-Poly1305, so it can (and does) send 0-RTT
+     * keyed with the PSK's cipher; the server offers only ChaCha20-Poly1305.
+     * The server therefore selects a different cipher than the one that keyed
+     * the early data -- same digest -- and rejects the early data.
      */
     if (!TEST_true(SSL_set_ciphersuites(clientssl,
-            "TLS_CHACHA20_POLY1305_SHA256"))
+            "TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256"))
         || !TEST_true(SSL_set_ciphersuites(serverssl,
             "TLS_CHACHA20_POLY1305_SHA256")))
         goto end;
@@ -6283,6 +6329,214 @@ end:
     return 1;
 #endif
 }
+
+#if !defined(OPENSSL_NO_CHACHA) && !defined(OPENSSL_NO_POLY1305)
+/*
+ * A security callback that keeps TLS_AES_128_GCM_SHA256 off the wire, while
+ * leaving it in the configured ciphersuite list.
+ */
+static int no_aes128gcm_supported_cb(const SSL *ssl, const SSL_CTX *ctx,
+    int op, int bits, int nid, void *other, void *ex)
+{
+    if (op == SSL_SECOP_CIPHER_SUPPORTED && other != NULL
+        && strcmp(SSL_CIPHER_get_name((const SSL_CIPHER *)other),
+               "TLS_AES_128_GCM_SHA256")
+            == 0)
+        return 0;
+    return 1;
+}
+
+/*
+ * A PSK bound to a SHA-256 cipher is offered, but a security callback drops
+ * that exact cipher from the ClientHello (leaving ChaCha20-Poly1305, same
+ * digest). Per RFC 9846 4.3.10 0-RTT needs the PSK's exact cipher on the wire,
+ * so early_data must be suppressed -- yet the PSK is still digest-compatible
+ * and resumes at 1-RTT. Regression guard for tls13_early_cipher_offered() /
+ * tls13_digest_offered() testing SSL_SECOP_CIPHER_SUPPORTED (what is actually
+ * serialised) rather than the configured list under SSL_SECOP_CIPHER_CHECK.
+ */
+static int test_early_data_psk_cipher_off_wire(void)
+{
+    SSL_CTX *cctx = NULL, *sctx = NULL;
+    SSL *clientssl = NULL, *serverssl = NULL;
+    int testresult = 0;
+    SSL_SESSION *sess = NULL;
+    unsigned char buf[20];
+    unsigned char edexp[32];
+    size_t readbytes, written;
+
+    if (is_fips)
+        return TEST_skip("CHACHA is not supported in FIPS");
+
+    if (!TEST_true(setupearly_data_test(&cctx, &sctx, &clientssl,
+            &serverssl, &sess, 2, SHA256_DIGEST_LENGTH, 0)))
+        goto end;
+
+    if (!TEST_true(SSL_set_ciphersuites(clientssl,
+            "TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256"))
+        || !TEST_true(SSL_set_ciphersuites(serverssl,
+            "TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256")))
+        goto end;
+
+    /* Drop the PSK's exact cipher from the client's wire offer. */
+    SSL_set_security_level(clientssl, 0);
+    SSL_set_security_callback(clientssl, no_aes128gcm_supported_cb);
+
+    SSL_set_connect_state(clientssl);
+
+    /*
+     * The client suppresses 0-RTT (the PSK cipher is not on the wire): the
+     * first SSL_write_early_data() sends the ClientHello without early data and
+     * reports "retry"; the server sees no early data; the connection completes
+     * at 1-RTT with early data rejected on the client.
+     */
+    if (!TEST_false(SSL_write_early_data(clientssl, MSG1, strlen(MSG1),
+            &written))
+        || !TEST_int_eq(SSL_get_error(clientssl, 0), SSL_ERROR_WANT_READ)
+        /*
+         * Suppressing 0-RTT derives no early secrets, so the early exporter
+         * must be unavailable, both before the handshake completes -- where
+         * there is not even a negotiated cipher to take a digest from -- and
+         * after, where the status reads REJECTED as it would for a server
+         * rejection.
+         */
+        || !TEST_false(SSL_export_keying_material_early(clientssl, edexp,
+            sizeof(edexp), "label", 5, NULL, 0))
+        || !TEST_int_eq(SSL_read_early_data(serverssl, buf, sizeof(buf),
+                            &readbytes),
+            SSL_READ_EARLY_DATA_FINISH)
+        || !TEST_size_t_eq(readbytes, 0)
+        || !TEST_true(create_ssl_connection(serverssl, clientssl,
+            SSL_ERROR_NONE))
+        || !TEST_int_eq(SSL_get_early_data_status(clientssl),
+            SSL_EARLY_DATA_REJECTED)
+        || !TEST_false(SSL_export_keying_material_early(clientssl, edexp,
+            sizeof(edexp), "label", 5, NULL, 0)))
+        goto end;
+
+    /* But the PSK still resumed, on the digest-compatible cipher. */
+    if (!TEST_true(SSL_session_reused(clientssl))
+        || !TEST_str_eq(SSL_CIPHER_get_name(SSL_get_current_cipher(clientssl)),
+            "TLS_CHACHA20_POLY1305_SHA256"))
+        goto end;
+
+    testresult = 1;
+end:
+    SSL_SESSION_free(sess);
+    SSL_SESSION_free(clientpsk);
+    SSL_SESSION_free(serverpsk);
+    clientpsk = serverpsk = NULL;
+    SSL_free(serverssl);
+    SSL_free(clientssl);
+    SSL_CTX_free(sctx);
+    SSL_CTX_free(cctx);
+    return testresult;
+}
+#endif
+
+#ifndef OPENSSL_NO_EC
+/* A raw external PSK bound to |suite_id|'s ciphersuite, master key all 0x01. */
+static SSL_SESSION *make_hrr_psk(SSL *ssl, const unsigned char *suite_id)
+{
+    static const unsigned char key[32] = {
+        1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+        1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1
+    };
+    const SSL_CIPHER *cipher = SSL_CIPHER_find(ssl, suite_id);
+    SSL_SESSION *s = SSL_SESSION_new();
+
+    if (s == NULL || cipher == NULL
+        || !SSL_SESSION_set1_master_key(s, key, sizeof(key))
+        || !SSL_SESSION_set_cipher(s, cipher)
+        || !SSL_SESSION_set_protocol_version(s, TLS1_3_VERSION)) {
+        SSL_SESSION_free(s);
+        return NULL;
+    }
+    return s;
+}
+
+static const unsigned char hrr_psk_id[] = "hrrpskid";
+
+/*
+ * A poorly-behaved callback that yields a PSK bound to a SHA-384 cipher on the
+ * first (md == NULL) call and a SHA-256 one once the digest is known.
+ */
+static int hrr_use_session_cb(SSL *ssl, const EVP_MD *md,
+    const unsigned char **id, size_t *idlen, SSL_SESSION **sess)
+{
+    static const unsigned char sha384_id[] = { 0x13, 0x02 };
+    static const unsigned char sha256_id[] = { 0x13, 0x01 };
+
+    *id = hrr_psk_id;
+    *idlen = sizeof(hrr_psk_id) - 1;
+    if (md == NULL)
+        *sess = make_hrr_psk(ssl, sha384_id);
+    else if (EVP_MD_is_a(md, "SHA256"))
+        *sess = make_hrr_psk(ssl, sha256_id);
+    else
+        *sess = NULL;
+    return *sess != NULL;
+}
+
+static int hrr_find_session_cb(SSL *ssl, const unsigned char *identity,
+    size_t identity_len, SSL_SESSION **sess)
+{
+    static const unsigned char sha256_id[] = { 0x13, 0x01 };
+
+    if (identity_len != sizeof(hrr_psk_id) - 1
+        || memcmp(identity, hrr_psk_id, identity_len) != 0) {
+        *sess = NULL;
+        return 1;
+    }
+    *sess = make_hrr_psk(ssl, sha256_id);
+    return *sess != NULL;
+}
+
+/*
+ * After a HelloRetryRequest the second ClientHello must not introduce a
+ * pre_shared_key extension the first lacked (RFC 9846 4.2.2). Here the client
+ * offers only TLS_AES_128_GCM_SHA256, so the callback's first (SHA-384) PSK is
+ * dropped and CH1 carries no PSK; the retry then makes the callback yield a
+ * digest-compatible SHA-256 PSK. Check that no PSK extension is added in CH2.
+ */
+static int test_hrr_psk_no_ch2_add(void)
+{
+    SSL_CTX *cctx = NULL, *sctx = NULL;
+    SSL *clientssl = NULL, *serverssl = NULL;
+    int testresult = 0;
+
+    if (!TEST_true(create_ssl_ctx_pair(libctx, TLS_server_method(),
+            TLS_client_method(), TLS1_3_VERSION, TLS1_3_VERSION,
+            &sctx, &cctx, cert, privkey))
+        || !TEST_true(SSL_CTX_set_ciphersuites(cctx, "TLS_AES_128_GCM_SHA256"))
+        || !TEST_true(SSL_CTX_set_ciphersuites(sctx, "TLS_AES_128_GCM_SHA256")))
+        goto end;
+    SSL_CTX_set_psk_use_session_callback(cctx, hrr_use_session_cb);
+    SSL_CTX_set_psk_find_session_callback(sctx, hrr_find_session_cb);
+
+    if (!TEST_true(create_ssl_objects(sctx, cctx, &serverssl, &clientssl,
+            NULL, NULL))
+        /* Client sends a P-256 key_share; server forces a retry to P-384. */
+        || !TEST_true(SSL_set1_groups_list(clientssl, "P-256:P-384"))
+        || !TEST_true(SSL_set1_groups_list(serverssl, "P-384")))
+        goto end;
+
+    if (!TEST_true(create_ssl_connection(serverssl, clientssl, SSL_ERROR_NONE)))
+        goto end;
+
+    /* CH2 must not have added a PSK, so no resumption happened. */
+    if (!TEST_false(SSL_session_reused(clientssl)))
+        goto end;
+
+    testresult = 1;
+end:
+    SSL_free(serverssl);
+    SSL_free(clientssl);
+    SSL_CTX_free(sctx);
+    SSL_CTX_free(cctx);
+    return testresult;
+}
+#endif /* OPENSSL_NO_EC */
 #endif /* !defined(OSSL_NO_USABLE_TLS1_3) */
 
 #if !defined(OSSL_NO_USABLE_TLS1_3) && !defined(OPENSSL_NO_TLS1_2)
@@ -6637,14 +6891,16 @@ end:
  * Test 13 = Test MLKEM512
  * Test 14 = Test MLKEM768
  * Test 15 = Test MLKEM1024
- * Test 16 = Test X25519MLKEM768
- * Test 17 = Test SecP256r1MLKEM768
- * Test 18 = Test SecP384r1MLKEM1024
- * Test 19 = Test curveSM2 with TLSv1.3 client and server
- * Test 20 = Test curveSM2MLKEM768 with TLSv1.3 client and server
- * Test 21 = Test all ML-KEM with TLSv1.2 client and server
- * Test 22 = Test all FFDHE with TLSv1.2 client and server
- * Test 23 = Test all ECDHE with TLSv1.2 client and server
+ * Test 16 = Test MLKEM512X25519
+ * Test 17 = Test X25519MLKEM768
+ * Test 18 = Test SecP256r1MLKEM512
+ * Test 19 = Test SecP256r1MLKEM768
+ * Test 20 = Test SecP384r1MLKEM1024
+ * Test 21 = Test curveSM2 with TLSv1.3 client and server
+ * Test 22 = Test curveSM2MLKEM768 with TLSv1.3 client and server
+ * Test 23 = Test all ML-KEM with TLSv1.2 client and server
+ * Test 24 = Test all FFDHE with TLSv1.2 client and server
+ * Test 25 = Test all ECDHE with TLSv1.2 client and server
  */
 #ifndef OPENSSL_NO_EC
 static int ecdhe_kexch_groups[] = { NID_X9_62_prime256v1, NID_secp384r1,
@@ -6675,7 +6931,7 @@ static int test_key_exchange(int idx)
     switch (idx) {
 #ifndef OPENSSL_NO_EC
 #ifndef OPENSSL_NO_TLS1_2
-    case 23:
+    case 25:
         max_version = TLS1_2_VERSION;
 #endif /* OPENSSL_NO_TLS1_2 */
         /* Fall through */
@@ -6713,7 +6969,7 @@ static int test_key_exchange(int idx)
 #endif /* OPENSSL_NO_EC */
 #ifndef OPENSSL_NO_DH
 #ifndef OPENSSL_NO_TLS1_2
-    case 22:
+    case 24:
         max_version = TLS1_2_VERSION;
 #endif /* OPENSSL_NO_TLS1_2 */
         /* Fall through */
@@ -6745,7 +7001,7 @@ static int test_key_exchange(int idx)
 #endif /* OPENSSL_NO_DH */
 #ifndef OPENSSL_NO_ML_KEM
 #if !defined(OPENSSL_NO_TLS1_2)
-    case 21:
+    case 23:
         max_version = TLS1_2_VERSION;
         kexch_groups = NULL;
 #if !defined(OPENSSL_NO_EC)
@@ -6787,16 +7043,26 @@ static int test_key_exchange(int idx)
 #ifndef OPENSSL_NO_ECX
     case 16:
         kexch_groups = NULL;
+        kexch_name0 = "MLKEM512X25519";
+        kexch_names = kexch_name0;
+        break;
+    case 17:
+        kexch_groups = NULL;
         kexch_name0 = "X25519MLKEM768";
         kexch_names = kexch_name0;
         break;
 #endif /* OPENSSL_NO_ECX */
-    case 17:
+    case 18:
+        kexch_groups = NULL;
+        kexch_name0 = "SecP256r1MLKEM512";
+        kexch_names = kexch_name0;
+        break;
+    case 19:
         kexch_groups = NULL;
         kexch_name0 = "SecP256r1MLKEM768";
         kexch_names = kexch_name0;
         break;
-    case 18:
+    case 20:
         kexch_groups = NULL;
         kexch_name0 = "SecP384r1MLKEM1024";
         kexch_names = kexch_name0;
@@ -6806,7 +7072,7 @@ static int test_key_exchange(int idx)
 
 #ifndef OPENSSL_NO_EC
 #ifndef OPENSSL_NO_SM2
-    case 19:
+    case 21:
         if (is_fips)
             return TEST_skip("curveSM2 is not supported by the fips provider.");
         kexch_groups = NULL;
@@ -6814,7 +7080,7 @@ static int test_key_exchange(int idx)
         kexch_names = kexch_name0;
         break;
 #ifndef OPENSSL_NO_ML_KEM
-    case 20:
+    case 22:
         if (is_fips)
             return TEST_skip("curveSM2MLKEM768 is not supported by the fips provider.");
         kexch_groups = NULL;
@@ -6831,8 +7097,12 @@ static int test_key_exchange(int idx)
     }
 
     if (is_fips && fips_provider_version_lt(libctx, 3, 5, 0)
-        && ((idx >= 12 && idx <= 18) || idx == 21))
+        && ((idx >= 12 && idx <= 20) || idx == 23))
         return TEST_skip("ML-KEM not supported in this version of fips provider");
+
+    if (is_fips && fips_provider_version_lt(libctx, 4, 2, 0)
+        && (idx == 16 || idx == 18))
+        return TEST_skip("ML-KEM-512 hybrids not supported in this version of fips provider");
 
     if (!TEST_true(create_ssl_ctx_pair(libctx, TLS_server_method(),
             TLS_client_method(), TLS1_VERSION,
@@ -17298,6 +17568,12 @@ int setup_tests(void)
     ADD_ALL_TESTS(test_early_data_not_expected, 6);
 #if !defined(OSSL_NO_USABLE_TLS1_3)
     ADD_TEST(test_early_data_psk_cipher_mismatch);
+#if !defined(OPENSSL_NO_CHACHA) && !defined(OPENSSL_NO_POLY1305)
+    ADD_TEST(test_early_data_psk_cipher_off_wire);
+#endif
+#ifndef OPENSSL_NO_EC
+    ADD_TEST(test_hrr_psk_no_ch2_add);
+#endif
 #endif
 #endif /* !defined(OSSL_NO_USABLE_TLS1_3) || !defined(OSSL_NO_USABLE_DTLS1_3) */
 #if !defined(OSSL_NO_USABLE_TLS1_3) && !defined(OPENSSL_NO_TLS1_2)
@@ -17326,14 +17602,14 @@ int setup_tests(void)
 #if !defined(OSSL_NO_USABLE_TLS1_3)
 #ifndef OPENSSL_NO_TLS1_2
     /* Test with both TLSv1.3 and 1.2 versions */
-    ADD_ALL_TESTS(test_key_exchange, 23);
+    ADD_ALL_TESTS(test_key_exchange, 26);
 #if !defined(OPENSSL_NO_EC) && !defined(OPENSSL_NO_DH)
     ADD_ALL_TESTS(test_negotiated_group,
         4 * (OSSL_NELEM(ecdhe_kexch_groups) + OSSL_NELEM(ffdhe_kexch_groups)));
 #endif
 #else
     /* Test with only TLSv1.3 versions */
-    ADD_ALL_TESTS(test_key_exchange, 20);
+    ADD_ALL_TESTS(test_key_exchange, 23);
 #endif
     ADD_ALL_TESTS(test_custom_exts, 6);
     ADD_TEST(test_pha_key_update);
