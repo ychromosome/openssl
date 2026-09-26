@@ -478,7 +478,8 @@ static int test_provider_registry_indexes(void)
     OSSL_PROVIDER *localdef = NULL, *localtls = NULL;
     SSL_CTX *ctx = NULL;
     const SSL_CIPHER *by_id, *by_name;
-    char name[64], description[256];
+    char *allocated_description = NULL;
+    char name[64], description[256], too_small[1];
     uint32_t id;
     int i, ret = 0;
 
@@ -527,11 +528,16 @@ static int test_provider_registry_indexes(void)
         || !TEST_true(SSL_CIPHER_is_aead(by_id))
         || !TEST_ptr(SSL_CIPHER_get_handshake_digest(by_id))
         || !TEST_ptr(SSL_CIPHER_description(
-            by_id, description, sizeof(description))))
+            by_id, description, sizeof(description)))
+        || !TEST_ptr_null(SSL_CIPHER_description(
+            by_id, too_small, sizeof(too_small)))
+        || !TEST_ptr(allocated_description = SSL_CIPHER_description(
+                         by_id, NULL, 0)))
         goto end;
 
     ret = 1;
 end:
+    OPENSSL_free(allocated_description);
     SSL_CTX_free(ctx);
     tls_provider_libctx_free(localctx, localdef, localtls);
     ERR_clear_error();
