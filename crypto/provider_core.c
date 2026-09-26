@@ -677,7 +677,8 @@ OSSL_PROVIDER *ossl_provider_new(OSSL_LIB_CTX *libctx, const char *name,
         return NULL;
     }
 
-    prov->libctx = libctx;
+    /* Keep the concrete owner selected when the provider store was resolved. */
+    prov->libctx = store->libctx;
 #ifndef FIPS_MODULE
     prov->error_lib = ERR_get_next_error_library();
 #endif
