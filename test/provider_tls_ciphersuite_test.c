@@ -544,7 +544,7 @@ end:
     return ret;
 }
 
-static int test_provider_peer_list_deduplication(void)
+static int test_provider_peer_list_duplicates(void)
 {
     static const unsigned char suites[] = {
         0xff, 0xa0, 0xff, 0xa0, 0xff, 0xa0,
@@ -559,13 +559,17 @@ static int test_provider_peer_list_deduplication(void)
         || !TEST_ptr(ssl = SSL_new(ctx))
         || !TEST_true(SSL_bytes_to_cipher_list(ssl, suites, sizeof(suites),
             0, &ciphers, &scsvs))
-        || !TEST_int_eq(sk_SSL_CIPHER_num(ciphers), 3)
+        || !TEST_int_eq(sk_SSL_CIPHER_num(ciphers), 5)
         || !TEST_int_eq(sk_SSL_CIPHER_value(ciphers, 0)->origin,
             SSL_CIPHER_ORIGIN_PROVIDER)
-        || !TEST_int_eq(sk_SSL_CIPHER_value(ciphers, 1)->origin,
-            SSL_CIPHER_ORIGIN_STATIC)
+        || !TEST_ptr_eq(sk_SSL_CIPHER_value(ciphers, 0),
+            sk_SSL_CIPHER_value(ciphers, 1))
         || !TEST_ptr_eq(sk_SSL_CIPHER_value(ciphers, 1),
-            sk_SSL_CIPHER_value(ciphers, 2)))
+            sk_SSL_CIPHER_value(ciphers, 2))
+        || !TEST_int_eq(sk_SSL_CIPHER_value(ciphers, 3)->origin,
+            SSL_CIPHER_ORIGIN_STATIC)
+        || !TEST_ptr_eq(sk_SSL_CIPHER_value(ciphers, 3),
+            sk_SSL_CIPHER_value(ciphers, 4)))
         goto end;
 
     ret = 1;
@@ -574,6 +578,77 @@ end:
     sk_SSL_CIPHER_free(scsvs);
     SSL_free(ssl);
     SSL_CTX_free(ctx);
+    ERR_clear_error();
+    return ret;
+}
+
+static int test_provider_peer_list_maximum(void)
+{
+    const size_t list_len = UINT16_MAX - 1;
+    unsigned char *suites = NULL;
+    SSL_CTX *ctx = NULL;
+    SSL *ssl = NULL;
+    STACK_OF(SSL_CIPHER) *ciphers = NULL, *scsvs = NULL;
+    size_t i;
+    int ret = 0;
+
+    if (!TEST_ptr(suites = OPENSSL_malloc(list_len)))
+        goto end;
+    for (i = 0; i < list_len / 2; i += 2) {
+        suites[i] = 0x13;
+        suites[i + 1] = 0x01;
+    }
+    for (; i < list_len; i += 2) {
+        suites[i] = 0xff;
+        suites[i + 1] = 0xa0;
+    }
+
+    if (!TEST_ptr(ctx = SSL_CTX_new_ex(libctx, NULL, TLS_method()))
+        || !TEST_ptr(ssl = SSL_new(ctx))
+        || !TEST_true(SSL_bytes_to_cipher_list(ssl, suites, list_len, 0,
+            &ciphers, &scsvs))
+        || !TEST_int_eq(sk_SSL_CIPHER_num(ciphers), (int)(list_len / 2)))
+        goto end;
+
+    ret = 1;
+end:
+    OPENSSL_free(suites);
+    sk_SSL_CIPHER_free(ciphers);
+    sk_SSL_CIPHER_free(scsvs);
+    SSL_free(ssl);
+    SSL_CTX_free(ctx);
+    ERR_clear_error();
+    return ret;
+}
+
+static int test_provider_max_name_description(void)
+{
+    OSSL_LIB_CTX *localctx = NULL;
+    OSSL_PROVIDER *localdef = NULL, *localtls = NULL;
+    SSL_CTX *ctx = NULL;
+    const SSL_CIPHER *cipher;
+    char description[128], *allocated = NULL;
+    int ret = 0;
+
+    if (!TEST_true(tls_provider_libctx_new(&localctx, &localdef, &localtls,
+            "tls-provider-max-name", "max-name", "?provider=tls-provider"))
+        || !TEST_ptr(ctx = SSL_CTX_new_ex(localctx, NULL, TLS_method()))
+        || !TEST_ptr(cipher = ossl_ssl_get0_provider_cipher_by_id(ctx,
+                         SSL3_CK_CIPHERSUITE_FLAG | 0xffa0U))
+        || !TEST_ptr_eq(SSL_CIPHER_description(cipher, description,
+                            sizeof(description)),
+            description)
+        || !TEST_size_t_eq(strlen(description), sizeof(description) - 1)
+        || !TEST_int_eq(description[sizeof(description) - 1], '\0')
+        || !TEST_ptr(allocated = SSL_CIPHER_description(cipher, NULL, 0))
+        || !TEST_size_t_gt(strlen(allocated), sizeof(description) - 1))
+        goto end;
+
+    ret = 1;
+end:
+    OPENSSL_free(allocated);
+    SSL_CTX_free(ctx);
+    tls_provider_libctx_free(localctx, localdef, localtls);
     ERR_clear_error();
     return ret;
 }
@@ -1994,7 +2069,9 @@ int setup_tests(void)
     ADD_TEST(test_oversized_aead_fixture);
     ADD_ALL_TESTS(test_ciphersuite_mode, OSSL_NELEM(ciphersuite_tests));
     ADD_TEST(test_provider_registry_indexes);
-    ADD_TEST(test_provider_peer_list_deduplication);
+    ADD_TEST(test_provider_peer_list_duplicates);
+    ADD_TEST(test_provider_peer_list_maximum);
+    ADD_TEST(test_provider_max_name_description);
     ADD_TEST(test_property_query_exclusion);
     ADD_TEST(test_provider_composition);
     ADD_ALL_TESTS(test_ciphersuite_setter_null, 4);

@@ -16,6 +16,13 @@ The capability adds public source API macros but no public function or ABI
 symbol. Discovery after `SSL_CTX` creation is not supported. Sessions created
 under a provider suite cannot be resumed.
 
+Descriptors retain the fetched EVP objects instead of storing names for a
+later fetch. This preserves the implementation selected by the library
+context's method store. In cached-fetch builds these are method-store-backed
+objects, not independent references that keep the library context alive.
+Callers must free provider-defined descriptors and sessions before the
+originating library context.
+
 Capability
 ----------
 

@@ -7687,9 +7687,6 @@ int ossl_bytes_to_cipher_list(SSL_CONNECTION *s, PACKET *cipher_suites,
         if (c != NULL) {
             STACK_OF(SSL_CIPHER) *target = c->valid ? sk : scsvs;
 
-            if (c->origin == SSL_CIPHER_ORIGIN_PROVIDER
-                && ossl_ssl_cipher_stack_find(target, c) >= 0)
-                continue;
             if (!sk_SSL_CIPHER_push(target, c)) {
                 if (fatal)
                     SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_CRYPTO_LIB);

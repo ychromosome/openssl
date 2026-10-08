@@ -717,7 +717,8 @@ static int test_provider_external_psk_rejected(int idx)
     ERR_clear_error();
     if (!TEST_false(tls_parse_ctos_psk(sc, &packet,
             SSL_EXT_CLIENT_HELLO, NULL, 0))
-        || !TEST_int_eq(ERR_GET_REASON(ERR_peek_error()), SSL_R_BAD_PSK))
+        || !TEST_int_eq(ERR_GET_REASON(ERR_peek_error()), SSL_R_BAD_PSK)
+        || !TEST_int_eq(sc->s3.send_alert[1], SSL_AD_INTERNAL_ERROR))
         goto end;
 
     ret = 1;

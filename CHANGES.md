@@ -71,7 +71,14 @@ OpenSSL 4.2
    `TLS-CIPHERSUITE` capability, with explicit selection and unchanged built-in
    defaults. These sessions cannot be resumed, cached, serialised or ticketed.
    Provider-backed external PSK and 0-RTT are unsupported, as are DTLS, QUIC and
-   kTLS. See provider-base(7) for the capability contract.
+   kTLS. Malformed descriptors and name or code-point collisions cause
+   `SSL_CTX` creation to fail. See provider-base(7) for the capability contract.
+
+   *Martin Wolf*
+
+ * Fixed library-context teardown when a provider owns child contexts.
+   Providers now retain the concrete library context selected for their
+   provider store, including when they were loaded with a NULL context.
 
    *Martin Wolf*
 

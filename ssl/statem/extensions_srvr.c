@@ -1392,7 +1392,7 @@ int tls_parse_ctos_psk(SSL_CONNECTION *s, PACKET *pkt, unsigned int context,
             return 0;
         }
         if (!ossl_ssl_session_is_external_psk_admissible(sess)) {
-            SSLfatal(s, SSL_AD_ILLEGAL_PARAMETER, SSL_R_BAD_PSK);
+            SSLfatal(s, SSL_AD_INTERNAL_ERROR, SSL_R_BAD_PSK);
             goto err;
         }
 

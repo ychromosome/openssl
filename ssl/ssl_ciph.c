@@ -2152,7 +2152,7 @@ char *SSL_CIPHER_description(const SSL_CIPHER *cipher, char *buf, int len)
     }
 
     written = snprintf(buf, len, format, cipher->name, ver, kx, au, enc, mac);
-    if (written < 0 || written >= len) {
+    if (written < 0 || (allocated && written >= len)) {
         if (allocated)
             OPENSSL_free(buf);
         return NULL;
