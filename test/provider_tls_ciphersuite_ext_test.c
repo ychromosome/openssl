@@ -318,6 +318,93 @@ end:
     return ret;
 }
 
+static int test_early_data_rejected_on_provider_transition(void)
+{
+    const SUITE_VARIANT *v = &variants[0];
+    static const unsigned char msg[] = "provider early data";
+    unsigned char buf[sizeof(msg)];
+    SSL_CTX *sctx = NULL, *cctx = NULL;
+    SSL *serverssl = NULL, *clientssl = NULL;
+    SSL_SESSION *sess = NULL, *after = NULL;
+    char both[128];
+    size_t written = 0, readbytes = 0;
+    int ret = 0;
+
+    snprintf(both, sizeof(both), "%s:%s", v->provname, v->builtinname);
+
+    if (!make_pair(v->builtinname, v->builtinname, cert, privkey,
+            &sctx, &cctx)
+        || !TEST_true(SSL_CTX_set_num_tickets(sctx, 1))
+        || !TEST_true(SSL_CTX_set_max_early_data(sctx, sizeof(msg))))
+        goto end;
+    SSL_CTX_set_session_cache_mode(cctx,
+        SSL_SESS_CACHE_CLIENT | SSL_SESS_CACHE_NO_INTERNAL_STORE);
+    SSL_CTX_sess_set_new_cb(cctx, capture_session_cb);
+    if (!TEST_true(create_ssl_objects(sctx, cctx, &serverssl, &clientssl,
+            NULL, NULL))
+        || !TEST_true(create_ssl_connection(serverssl, clientssl,
+            SSL_ERROR_NONE))
+        || !TEST_ptr(captured_session)
+        || !TEST_uint_gt(SSL_SESSION_get_max_early_data(captured_session), 0))
+        goto end;
+    sess = captured_session;
+    captured_session = NULL;
+    shutdown_ssl_connection(serverssl, clientssl);
+    serverssl = clientssl = NULL;
+
+    if (!TEST_true(SSL_CTX_set_ciphersuites(sctx, both))
+        || !TEST_true(SSL_CTX_set_ciphersuites(cctx, both)))
+        goto end;
+    SSL_CTX_set_options(sctx, SSL_OP_SERVER_PREFERENCE);
+    reset_counters();
+    if (!TEST_true(create_ssl_objects(sctx, cctx, &serverssl, &clientssl,
+            NULL, NULL))
+        || !TEST_true(SSL_set_session(clientssl, sess)))
+        goto end;
+    SSL_set_msg_callback(clientssl, wire_cb);
+    SSL_set_msg_callback(serverssl, wire_cb);
+    if (!TEST_true(SSL_write_early_data(clientssl, msg, sizeof(msg),
+            &written))
+        || !TEST_size_t_eq(written, sizeof(msg))
+        || !TEST_int_eq(SSL_read_early_data(serverssl, buf, sizeof(buf),
+                            &readbytes),
+            SSL_READ_EARLY_DATA_FINISH)
+        || !TEST_size_t_eq(readbytes, 0)
+        || !TEST_int_eq(SSL_get_early_data_status(serverssl),
+            SSL_EARLY_DATA_REJECTED)
+        || !TEST_true(create_ssl_connection(serverssl, clientssl,
+            SSL_ERROR_NONE))
+        || !TEST_int_eq(SSL_get_early_data_status(clientssl),
+            SSL_EARLY_DATA_REJECTED)
+        || !TEST_true(SSL_session_reused(serverssl))
+        || !TEST_true(SSL_session_reused(clientssl))
+        || !check_negotiated(serverssl, clientssl, v->codepoint,
+            SSL_CIPHER_ORIGIN_PROVIDER)
+        || !TEST_int_eq(nst_written, 0)
+        || !TEST_ptr(after = SSL_get1_session(clientssl))
+        || !TEST_false(SSL_SESSION_is_resumable(after))
+        || !TEST_int_eq(SSL_SESSION_get0_cipher(after)->origin,
+            SSL_CIPHER_ORIGIN_PROVIDER)
+        || !TEST_int_eq(SSL_SESSION_get0_cipher(sess)->origin,
+            SSL_CIPHER_ORIGIN_STATIC)
+        || !TEST_false(sess->provider_cipher_seen)
+        || !TEST_true(SSL_SESSION_is_resumable(sess)))
+        goto end;
+
+    ret = 1;
+end:
+    SSL_SESSION_free(after);
+    SSL_SESSION_free(sess);
+    SSL_SESSION_free(captured_session);
+    captured_session = NULL;
+    SSL_free(serverssl);
+    SSL_free(clientssl);
+    SSL_CTX_free(sctx);
+    SSL_CTX_free(cctx);
+    ERR_clear_error();
+    return ret;
+}
+
 static int test_stateful_cache_provider_transition(void)
 {
     SSL_CTX *sctx = NULL, *cctx = NULL;
@@ -851,6 +938,52 @@ end:
     return ret;
 }
 
+static int test_provider_post_handshake_auth(void)
+{
+    SSL_CTX *sctx = NULL, *cctx = NULL;
+    SSL *serverssl = NULL, *clientssl = NULL;
+    int ret = 0;
+
+    if (!make_pair(PROV_SHA256_NAME, PROV_SHA256_NAME, cert, privkey,
+            &sctx, &cctx)
+        || !TEST_true(SSL_CTX_set_num_tickets(sctx, 1))
+        || !TEST_true(create_ssl_objects(sctx, cctx, &serverssl, &clientssl,
+            NULL, NULL)))
+        goto end;
+    SSL_set_post_handshake_auth(clientssl, 1);
+    reset_counters();
+    SSL_set_msg_callback(clientssl, wire_cb);
+    SSL_set_msg_callback(serverssl, wire_cb);
+    if (!TEST_true(create_ssl_connection(serverssl, clientssl,
+            SSL_ERROR_NONE))
+        || !TEST_int_eq(nst_written, 0)
+        || !TEST_int_eq(SSL_get_current_cipher(serverssl)->origin,
+            SSL_CIPHER_ORIGIN_PROVIDER))
+        goto end;
+
+    reset_counters();
+    SSL_set_verify(serverssl, SSL_VERIFY_PEER, NULL);
+    if (!TEST_true(SSL_verify_client_post_handshake(serverssl))
+        || !TEST_int_eq(SSL_do_handshake(serverssl), 1)
+        || !TEST_int_le(SSL_read(clientssl, NULL, 0), 0)
+        || !TEST_int_le(SSL_read(serverssl, NULL, 0), 0)
+        || !TEST_true(create_ssl_connection(serverssl, clientssl,
+            SSL_ERROR_NONE))
+        || !TEST_int_eq(nst_written, 0)
+        || !check_negotiated(serverssl, clientssl, PROV_SHA256_CP,
+            SSL_CIPHER_ORIGIN_PROVIDER))
+        goto end;
+
+    ret = 1;
+end:
+    SSL_free(serverssl);
+    SSL_free(clientssl);
+    SSL_CTX_free(sctx);
+    SSL_CTX_free(cctx);
+    ERR_clear_error();
+    return ret;
+}
+
 static int test_session_outlives_ctx(void)
 {
     SSL_CTX *sctx = NULL, *cctx = NULL;
@@ -1266,6 +1399,7 @@ int setup_tests(void)
 
     ADD_ALL_TESTS(test_builtin_resumption_copies, 2);
     ADD_ALL_TESTS(test_resume_into_provider_suite, 4);
+    ADD_TEST(test_early_data_rejected_on_provider_transition);
     ADD_TEST(test_stateful_cache_provider_transition);
     ADD_TEST(test_external_cache_rejects_provider_session);
     ADD_TEST(test_public_provider_cipher_assignment_rejected);
@@ -1273,6 +1407,7 @@ int setup_tests(void)
     ADD_ALL_TESTS(test_provider_external_psk_rejected, 2);
     ADD_ALL_TESTS(test_security_callback, 4);
     ADD_TEST(test_provider_aead_limit_failure);
+    ADD_TEST(test_provider_post_handshake_auth);
     ADD_TEST(test_session_outlives_ctx);
     ADD_TEST(test_d2i_into_provider_session);
     ADD_MFAIL_SAMPLED_NO_CHECK_TEST(test_d2i_provider_rollback_mfail, 64);
