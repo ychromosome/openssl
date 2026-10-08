@@ -33,6 +33,33 @@ OpenSSL 4.2
 
 ### Changes between 4.1 and 4.2 [xx XXX xxxx]
 
+ * `EVP_SKEY_get0_raw_key()` now accepts a NULL key pointer to retrieve only
+   the key length.  The length is obtained from the `OSSL_SKEY_PARAM_KEY_LENGTH`
+   key parameter without exporting the key, so it is also available for keys
+   that cannot be exported, provided the key management reports it.  The
+   built-in key managements now include this parameter when exporting key
+   parameters.
+   <!-- https://github.com/openssl/openssl/pull/33035 -->
+
+   *Iva Marinova*
+
+ * `X509_OBJECT_up_ref_count()` has been deprecated. Despite its name,
+   X509_OBJECT_up_ref_count() does not reference count the X509_OBJECT itself.
+   With X509_OBJECT being opaque there is nothing useful an application can do
+   with it.
+   <!-- https://github.com/openssl/openssl/pull/32823 -->
+
+   *Daniel Kubec*
+
+ * Changed the OpenSSL FIPS provider so that every algorithm advertised with
+   `fips=yes` explicitly exposes the `fips-indicator` as a gettable context
+   parameter and returns 1 for an approved operation.  The absence of an
+   indicator is no longer interpreted as approval.  Algorithms advertised
+   with `fips=no`, including X448MLKEM1024, remain unapproved and return 0 when
+   they expose the indicator.
+
+   *Shane Lontis and Paul Dale*
+
  * Fixed allocation-failure handling in `SSL_CTX_set_ciphersuites()` and
    `SSL_set_ciphersuites()`. If inserting a requested ciphersuite into the
    active list fails, the setter now reports failure and preserves the
@@ -84,6 +111,15 @@ OpenSSL 4.2
    and full-length tags.
 
    *Dominic Cunningham, Billy Bob Brumley*
+
+ * The TLS 1.3 server now enforces the RFC 8446 section 9.2 requirement that
+   a ClientHello containing a supported_groups extension also contains a
+   key_share extension and vice versa, aborting the handshake with a
+   missing_extension alert otherwise. Previously a PSK resumption ClientHello
+   that offered psk_ke and carried supported_groups but no key_share was
+   accepted when the server allowed non-DHE PSK key exchange.
+
+   *Paul Grubbs*
 
 OpenSSL 4.1
 -----------
@@ -414,12 +450,6 @@ OpenSSL 4.1
 
    *Danny Tsen*
 
- * Added optimized ML-DSA NTT operations on `s390x`
-   (or other architectures with 128 bit vector registers).
-   <!-- https://github.com/openssl/openssl/pull/30812 -->
-
-   *Timo Keller*
-
  * Added AVX2-optimized ML-DSA NTT operations on `x86_64`.
    <!-- https://github.com/openssl/openssl/pull/30160 -->
 
@@ -657,6 +687,11 @@ OpenSSL 4.1
    <!-- https://github.com/openssl/openssl/pull/30446 -->
 
    *Tomáš Mráz*
+
+ * Added optimized ML-KEM NTT and scalar multiplication operations on `s390x`
+   (with potential reuse for other architectures with 128 bit vector registers).
+
+   *Timo Keller*
 
 OpenSSL 4.0
 -----------
