@@ -419,6 +419,8 @@ static ossl_inline OSSL_LIB_CTX *tls_provider_get0_libctx(PROV_XOR_CTX *provctx)
 
 #define TLS_TEST_AEAD128_NAME "TLS-TEST-AES-128-GCM"
 #define TLS_TEST_AEAD256_NAME "TLS-TEST-AES-256-GCM"
+#define TLS_TEST_DECRYPT_ONLY_AEAD128_NAME \
+    "TLS-TEST-DECRYPT-ONLY-AES-128-GCM"
 #define TLS_TEST_LIMITED_AEAD128_NAME "TLS-TEST-LIMITED-AES-128-GCM"
 #define TLS_TEST_SHA256_NAME "TLS-TEST-SHA2-256"
 #define TLS_TEST_SHA384_NAME "TLS-TEST-SHA2-384"
@@ -591,7 +593,8 @@ static int tls_proxy_cipher_final(void *vctx, unsigned char *out,
     return 1;
 }
 
-static int tls_proxy_cipher_get_params(OSSL_PARAM params[], size_t keylen)
+static int tls_proxy_cipher_get_params(OSSL_PARAM params[], size_t keylen,
+    int decrypt_only)
 {
     OSSL_PARAM *p;
     size_t blocksize = 1, ivlen = 12;
@@ -616,17 +619,25 @@ static int tls_proxy_cipher_get_params(OSSL_PARAM params[], size_t keylen)
     p = OSSL_PARAM_locate(params, OSSL_CIPHER_PARAM_CUSTOM_IV);
     if (p != NULL && !OSSL_PARAM_set_int(p, value))
         return 0;
+    p = OSSL_PARAM_locate(params, OSSL_CIPHER_PARAM_DECRYPT_ONLY);
+    if (p != NULL && !OSSL_PARAM_set_int(p, decrypt_only))
+        return 0;
     return 1;
 }
 
 static int tls_proxy_aes128_get_params(OSSL_PARAM params[])
 {
-    return tls_proxy_cipher_get_params(params, 16);
+    return tls_proxy_cipher_get_params(params, 16, 0);
 }
 
 static int tls_proxy_aes256_get_params(OSSL_PARAM params[])
 {
-    return tls_proxy_cipher_get_params(params, 32);
+    return tls_proxy_cipher_get_params(params, 32, 0);
+}
+
+static int tls_proxy_decrypt_only_aes128_get_params(OSSL_PARAM params[])
+{
+    return tls_proxy_cipher_get_params(params, 16, 1);
 }
 
 static int tls_proxy_cipher_get_ctx_params(void *vctx, OSSL_PARAM params[])
@@ -651,6 +662,7 @@ static const OSSL_PARAM tls_proxy_cipher_gettable_params[] = {
     OSSL_PARAM_size_t(OSSL_CIPHER_PARAM_BLOCK_SIZE, NULL),
     OSSL_PARAM_int(OSSL_CIPHER_PARAM_AEAD, NULL),
     OSSL_PARAM_int(OSSL_CIPHER_PARAM_CUSTOM_IV, NULL),
+    OSSL_PARAM_int(OSSL_CIPHER_PARAM_DECRYPT_ONLY, NULL),
     OSSL_PARAM_END
 };
 
@@ -717,6 +729,11 @@ static const OSSL_DISPATCH tls_proxy_aes128_functions[] = {
 static const OSSL_DISPATCH tls_proxy_aes256_functions[] = {
     TLS_PROXY_CIPHER_DISPATCH(tls_proxy_aes256_newctx,
         tls_proxy_aes256_get_params)
+};
+
+static const OSSL_DISPATCH tls_proxy_decrypt_only_aes128_functions[] = {
+    TLS_PROXY_CIPHER_DISPATCH(tls_proxy_aes128_newctx,
+        tls_proxy_decrypt_only_aes128_get_params)
 };
 
 static const OSSL_DISPATCH tls_proxy_limited_aes128_functions[] = {
@@ -1033,6 +1050,8 @@ static const OSSL_ALGORITHM tls_prov_ciphers[] = {
         tls_proxy_aes128_functions },
     { TLS_TEST_AEAD256_NAME, "provider=tls-provider",
         tls_proxy_aes256_functions },
+    { TLS_TEST_DECRYPT_ONLY_AEAD128_NAME, "provider=tls-provider",
+        tls_proxy_decrypt_only_aes128_functions },
     { TLS_TEST_LIMITED_AEAD128_NAME, "provider=tls-provider",
         tls_proxy_limited_aes128_functions },
     { TLS_TEST_OVERSIZED_AEAD_NAME, "provider=tls-provider",
@@ -1168,6 +1187,8 @@ static const struct {
     const char *name;
 } ciphersuite_algorithm_modes[] = {
     { "valid-limit", TLS_CIPHERSUITE_AEAD_PARAM, TLS_TEST_LIMITED_AEAD128_NAME },
+    { "decrypt-only", TLS_CIPHERSUITE_AEAD_PARAM,
+        TLS_TEST_DECRYPT_ONLY_AEAD128_NAME },
     { "non-aead", TLS_CIPHERSUITE_AEAD_PARAM, "AES-128-ECB" },
     { "ccm", TLS_CIPHERSUITE_AEAD_PARAM, "AES-128-CCM" },
     { "unavailable-aead", TLS_CIPHERSUITE_AEAD_PARAM, "TLS-TEST-NO-SUCH-AEAD" },

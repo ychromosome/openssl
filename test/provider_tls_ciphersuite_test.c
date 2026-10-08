@@ -46,6 +46,7 @@ static const CIPHERSUITE_TEST ciphersuite_tests[] = {
     { "max-name", 1, 1 },
     { "max-aead-name", 1, 0 },
     { "max-digest-name", 1, 0 },
+    { "decrypt-only", 1, 0 },
     { "unavailable-aead", 1, 0 },
     { "unavailable-digest", 1, 0 },
     { "bad-name", 0, 0 },
@@ -440,6 +441,10 @@ static int test_ciphersuite_mode(int idx)
                     SSL_CIPHER_ORIGIN_PROVIDER))
                 goto end;
         }
+        if (strcmp(test->mode, "decrypt-only") == 0
+            && !TEST_false(SSL_CTX_set_ciphersuites(ctx,
+                TLS_TEST_SHA256_NAME)))
+            goto end;
     } else {
         if (!TEST_ptr_null(ctx) || !TEST_ulong_ne(ERR_peek_error(), 0))
             goto end;

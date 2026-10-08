@@ -379,12 +379,12 @@ static int add_provider_ciphersuite(const OSSL_PARAM params[], void *data)
     char name[TLS_CIPHERSUITE_NAME_MAX_LEN + 1] = { 0 };
     char aead_name[TLS_CIPHERSUITE_ALGORITHM_NAME_MAX_LEN + 1];
     char digest_name[TLS_CIPHERSUITE_ALGORITHM_NAME_MAX_LEN + 1];
-    const char *reason = "invalid descriptor";
+    const char *reason;
     unsigned int codepoint = 0, secbits = 0, taglen = 0;
     uint32_t id;
     int keylen, digest_idx;
     SSL_CIPHER *suite = NULL;
-    EVP_CIPHER *cipher = NULL;
+    const EVP_CIPHER *cipher = NULL;
     EVP_MD *digest = NULL;
 
     if (sk_SSL_CIPHER_num(ctx->provider_ciphersuites)
@@ -429,13 +429,9 @@ static int add_provider_ciphersuite(const OSSL_PARAM params[], void *data)
         goto invalid;
     }
 
-    (void)ERR_set_mark();
-    cipher = EVP_CIPHER_fetch(ctx->libctx, aead_name, ctx->propq);
-    if (cipher == NULL) {
-        ERR_pop_to_mark();
+    cipher = ssl_evp_cipher_fetch(ctx->libctx, aead_name, ctx->propq);
+    if (cipher == NULL)
         goto unavailable;
-    }
-    ERR_pop_to_mark();
     keylen = EVP_CIPHER_get_key_length(cipher);
     if ((EVP_CIPHER_get_flags(cipher) & EVP_CIPH_FLAG_AEAD_CIPHER) == 0
         || EVP_CIPHER_get_mode(cipher) == EVP_CIPH_CCM_MODE
@@ -507,7 +503,7 @@ crypto_err:
     /* fall through */
 err:
     pcd->callback_failed = 1;
-    EVP_CIPHER_free(cipher);
+    ssl_evp_cipher_free(cipher);
     EVP_MD_free(digest);
     ossl_ssl_cipher_free(suite);
     return 0;
@@ -522,7 +518,7 @@ unavailable:
         "Ignoring unavailable TLS-CIPHERSUITE from provider %s: %s\n",
         OSSL_PROVIDER_get0_name(pcd->provider),
         name[0] == '\0' ? "<unnamed>" : name);
-    EVP_CIPHER_free(cipher);
+    ssl_evp_cipher_free(cipher);
     EVP_MD_free(digest);
     ossl_ssl_cipher_free(suite);
     return 1;
